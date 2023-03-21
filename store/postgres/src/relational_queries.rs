@@ -3179,13 +3179,6 @@ impl<'a> SortKey<'a> {
                         }
                     }
                     ChildKey::Many(children) => {
-                        match select_statement_level {
-                            SelectStatementLevel::InnerStatement => {}
-                            SelectStatementLevel::OuterStatement => {
-                                return Err(constraint_violation!("Kamil, please fix me :("));
-                            }
-                        }
-
                         for child in children.iter() {
                             if child.sort_by_column.is_primary_key() {
                                 return Err(constraint_violation!("SortKey::Key never uses 'id'"));
