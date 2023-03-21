@@ -51,6 +51,8 @@ const BASE_SQL_COLUMNS: [&str; 2] = ["id", "vid"];
 /// The maximum number of bind variables that can be used in a query
 const POSTGRES_MAX_PARAMETERS: usize = u16::MAX as usize; // 65535
 
+const SORT_KEY_COLUMN: &str = "sort_key$";
+
 #[derive(Debug)]
 pub(crate) struct UnsupportedFilter {
     pub filter: String,
@@ -3113,10 +3115,11 @@ impl<'a> SortKey<'a> {
                     out.push_sql(", ");
 
                     if select_sort_key_directly {
-                        out.push_sql("sort_key$");
+                        out.push_sql(SORT_KEY_COLUMN);
                     } else {
                         br_column.name(out);
-                        out.push_sql(" as sort_key$");
+                        out.push_sql(" as ");
+                        out.push_sql(SORT_KEY_COLUMN);
                     }
                 }
             }
@@ -3129,11 +3132,13 @@ impl<'a> SortKey<'a> {
                     return Err(constraint_violation!("SortKey::Key never uses 'id'"));
                 }
                 if select_sort_key_directly {
-                    out.push_sql(", sort_key$");
+                    out.push_sql(", ");
+                    out.push_sql(SORT_KEY_COLUMN);
                 } else {
                     out.push_sql(", c.");
                     out.push_identifier(column.name.as_str())?;
-                    out.push_sql(" as sort_key$");
+                    out.push_sql(" as ");
+                    out.push_sql(SORT_KEY_COLUMN);
                 }
             }
             SortKey::ChildKey(nested) => {
@@ -3143,7 +3148,8 @@ impl<'a> SortKey<'a> {
                             return Err(constraint_violation!("SortKey::Key never uses 'id'"));
                         }
                         if select_sort_key_directly {
-                            out.push_sql(", sort_key$");
+                            out.push_sql(", ");
+                            out.push_sql(SORT_KEY_COLUMN);
                         } else {
                             out.push_sql(", ");
                             out.push_sql(child.prefix.as_str());
@@ -3186,7 +3192,8 @@ impl<'a> SortKey<'a> {
                         }
                     }
                 }
-                out.push_sql(" as sort_key$");
+                out.push_sql(" as ");
+                out.push_sql(SORT_KEY_COLUMN);
             }
         }
         Ok(())
@@ -3202,7 +3209,8 @@ impl<'a> SortKey<'a> {
                 out.push_identifier(PRIMARY_KEY_COLUMN)?;
                 if let Some(br_column) = br_column {
                     if use_sort_key_alias {
-                        out.push_sql(", sort_key$");
+                        out.push_sql(", ");
+                        out.push_sql(SORT_KEY_COLUMN);
                     } else {
                         out.push_sql(", ");
                         br_column.bare_name(out);
@@ -3216,7 +3224,8 @@ impl<'a> SortKey<'a> {
                 out.push_sql(" desc");
                 if let Some(br_column) = br_column {
                     if use_sort_key_alias {
-                        out.push_sql(", sort_key$");
+                        out.push_sql(", ");
+                        out.push_sql(SORT_KEY_COLUMN);
                     } else {
                         out.push_sql(", ");
                         br_column.bare_name(out);
@@ -3381,7 +3390,7 @@ impl<'a> SortKey<'a> {
                 };
                 out.push_sql(algorithm);
                 if use_sort_key_alias {
-                    out.push_sql("sort_key$");
+                    out.push_sql(SORT_KEY_COLUMN);
                 } else {
                     let name = column.name.as_str();
                     push_prefix(column_prefix, out);
@@ -3395,7 +3404,7 @@ impl<'a> SortKey<'a> {
             }
             _ => {
                 if use_sort_key_alias {
-                    out.push_sql("sort_key$");
+                    out.push_sql(SORT_KEY_COLUMN);
                 } else {
                     let name = column.name.as_str();
                     push_prefix(column_prefix, out);
