@@ -53,6 +53,14 @@ const POSTGRES_MAX_PARAMETERS: usize = u16::MAX as usize; // 65535
 
 const SORT_KEY_COLUMN: &str = "sort_key$";
 
+/// Describes at what level a `SELECT` statement is used.
+enum SelectStatementLevel {
+    // A `SELECT` statement that is nested inside another `SELECT` statement
+    InnerStatement,
+    // The top-level `SELECT` statement
+    OuterStatement,
+}
+
 #[derive(Debug)]
 pub(crate) struct UnsupportedFilter {
     pub filter: String,
@@ -2376,7 +2384,7 @@ impl<'a> FilterWindow<'a> {
         out.push_sql("select '");
         out.push_sql(self.table.object.as_str());
         out.push_sql("' as entity, c.id, c.vid, p.id::text as g$parent_id");
-        sort_key.select(&mut out, false)?;
+        sort_key.select(&mut out, SelectStatementLevel::InnerStatement)?;
         self.children(ParentLimit::Outer, block, out)
     }
 
@@ -3004,12 +3012,12 @@ impl<'a> SortKey<'a> {
                                 direction,
                             )?
                             .iter()
-                            .map(|asd| ChildIdDetails {
-                                parent_table: asd.parent_table,
-                                child_table: asd.child_table,
-                                parent_join_column: asd.parent_join_column,
-                                child_join_column: asd.child_join_column,
-                                prefix: asd.prefix.clone(),
+                            .map(|details| ChildIdDetails {
+                                parent_table: details.parent_table,
+                                child_table: details.child_table,
+                                parent_join_column: details.parent_join_column,
+                                child_join_column: details.child_join_column,
+                                prefix: details.prefix.clone(),
                             })
                             .collect(),
                             br_column,
@@ -3024,12 +3032,12 @@ impl<'a> SortKey<'a> {
                                 direction,
                             )?
                             .iter()
-                            .map(|asd| ChildIdDetails {
-                                parent_table: asd.parent_table,
-                                child_table: asd.child_table,
-                                parent_join_column: asd.parent_join_column,
-                                child_join_column: asd.child_join_column,
-                                prefix: asd.prefix.clone(),
+                            .map(|details| ChildIdDetails {
+                                parent_table: details.parent_table,
+                                child_table: details.child_table,
+                                parent_join_column: details.parent_join_column,
+                                child_join_column: details.child_join_column,
+                                prefix: details.prefix.clone(),
                             })
                             .collect(),
                             br_column,
@@ -3039,14 +3047,14 @@ impl<'a> SortKey<'a> {
                     Ok(SortKey::ChildKey(ChildKey::Many(
                         build_children_vec(layout, parent_table, entity_types, child, direction)?
                             .iter()
-                            .map(|asd| ChildKeyDetails {
-                                parent_table: asd.parent_table,
-                                parent_join_column: asd.parent_join_column,
-                                child_table: asd.child_table,
-                                child_join_column: asd.child_join_column,
-                                sort_by_column: asd.sort_by_column,
-                                prefix: asd.prefix.clone(),
-                                direction: asd.direction,
+                            .map(|details| ChildKeyDetails {
+                                parent_table: details.parent_table,
+                                parent_join_column: details.parent_join_column,
+                                child_table: details.child_table,
+                                child_join_column: details.child_join_column,
+                                sort_by_column: details.sort_by_column,
+                                prefix: details.prefix.clone(),
+                                direction: details.direction,
                             })
                             .collect(),
                     )))
@@ -3107,19 +3115,24 @@ impl<'a> SortKey<'a> {
     }
 
     /// Generate selecting the sort key if it is needed
-    fn select(&self, out: &mut AstPass<Pg>, select_sort_key_directly: bool) -> QueryResult<()> {
+    fn select(
+        &self,
+        out: &mut AstPass<Pg>,
+        select_statement_level: SelectStatementLevel,
+    ) -> QueryResult<()> {
         match self {
             SortKey::None => {}
             SortKey::IdAsc(br_column) | SortKey::IdDesc(br_column) => {
                 if let Some(br_column) = br_column {
                     out.push_sql(", ");
 
-                    if select_sort_key_directly {
-                        out.push_sql(SORT_KEY_COLUMN);
-                    } else {
-                        br_column.name(out);
-                        out.push_sql(" as ");
-                        out.push_sql(SORT_KEY_COLUMN);
+                    match select_statement_level {
+                        SelectStatementLevel::InnerStatement => {
+                            br_column.name(out);
+                            out.push_sql(" as ");
+                            out.push_sql(SORT_KEY_COLUMN);
+                        }
+                        SelectStatementLevel::OuterStatement => out.push_sql(SORT_KEY_COLUMN),
                     }
                 }
             }
@@ -3131,14 +3144,18 @@ impl<'a> SortKey<'a> {
                 if column.is_primary_key() {
                     return Err(constraint_violation!("SortKey::Key never uses 'id'"));
                 }
-                if select_sort_key_directly {
-                    out.push_sql(", ");
-                    out.push_sql(SORT_KEY_COLUMN);
-                } else {
-                    out.push_sql(", c.");
-                    out.push_identifier(column.name.as_str())?;
-                    out.push_sql(" as ");
-                    out.push_sql(SORT_KEY_COLUMN);
+
+                match select_statement_level {
+                    SelectStatementLevel::InnerStatement => {
+                        out.push_sql(", c.");
+                        out.push_identifier(column.name.as_str())?;
+                        out.push_sql(" as ");
+                        out.push_sql(SORT_KEY_COLUMN);
+                    }
+                    SelectStatementLevel::OuterStatement => {
+                        out.push_sql(", ");
+                        out.push_sql(SORT_KEY_COLUMN);
+                    }
                 }
             }
             SortKey::ChildKey(nested) => {
@@ -3147,19 +3164,26 @@ impl<'a> SortKey<'a> {
                         if child.sort_by_column.is_primary_key() {
                             return Err(constraint_violation!("SortKey::Key never uses 'id'"));
                         }
-                        if select_sort_key_directly {
-                            out.push_sql(", ");
-                            out.push_sql(SORT_KEY_COLUMN);
-                        } else {
-                            out.push_sql(", ");
-                            out.push_sql(child.prefix.as_str());
-                            out.push_sql(".");
-                            out.push_identifier(child.sort_by_column.name.as_str())?;
+
+                        match select_statement_level {
+                            SelectStatementLevel::InnerStatement => {
+                                out.push_sql(", ");
+                                out.push_sql(child.prefix.as_str());
+                                out.push_sql(".");
+                                out.push_identifier(child.sort_by_column.name.as_str())?;
+                            }
+                            SelectStatementLevel::OuterStatement => {
+                                out.push_sql(", ");
+                                out.push_sql(SORT_KEY_COLUMN);
+                            }
                         }
                     }
                     ChildKey::Many(children) => {
-                        if select_sort_key_directly {
-                            return Err(constraint_violation!("Kamil, please fix me :("));
+                        match select_statement_level {
+                            SelectStatementLevel::InnerStatement => {}
+                            SelectStatementLevel::OuterStatement => {
+                                return Err(constraint_violation!("Kamil, please fix me :("));
+                            }
                         }
 
                         for child in children.iter() {
@@ -3192,8 +3216,11 @@ impl<'a> SortKey<'a> {
                         }
                     }
                 }
-                out.push_sql(" as ");
-                out.push_sql(SORT_KEY_COLUMN);
+
+                if let SelectStatementLevel::InnerStatement = select_statement_level {
+                    out.push_sql(" as ");
+                    out.push_sql(SORT_KEY_COLUMN);
+                }
             }
         }
         Ok(())
@@ -3849,7 +3876,8 @@ impl<'a> FilterQuery<'a> {
             out.push_sql("select '");
             out.push_sql(table.object.as_str());
             out.push_sql("' as entity, c.id, c.vid");
-            self.sort_key.select(&mut out, false)?;
+            self.sort_key
+                .select(&mut out, SelectStatementLevel::InnerStatement)?; // here
             self.filtered_rows(table, filter, out.reborrow())?;
         }
         out.push_sql("\n ");
@@ -3866,7 +3894,8 @@ impl<'a> FilterQuery<'a> {
             out.push_sql("select m.entity, ");
             jsonb_build_object(column_names, "c", table, &mut out)?;
             out.push_sql(" as data, c.id");
-            self.sort_key.select(&mut out, true)?;
+            self.sort_key
+                .select(&mut out, SelectStatementLevel::OuterStatement)?;
             out.push_sql("\n  from ");
             out.push_sql(table.qualified_name.as_str());
             out.push_sql(" c,");

@@ -1021,7 +1021,7 @@ fn can_query_interface_with_sorting_by_child_entity() {
 }
 
 #[test]
-fn can_not_query_interface_with_sorting_by_derived_child_entity() {
+fn can_query_interface_with_sorting_by_derived_child_entity() {
     const QUERY: &str = "
     query {
         desc: medias(first: 100, orderBy: song__title, orderDirection: desc) {
