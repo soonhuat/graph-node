@@ -83,6 +83,7 @@ const THINGS_GQL: &str = r#"
         bigInt: BigInt,
         bigIntArray: [BigInt!]!
         color: Color,
+        int8: Int8,
     }
 
     interface Pet {
@@ -116,6 +117,7 @@ const THINGS_GQL: &str = r#"
         bin_name: Bytes!,
         email: String!,
         age: Int!,
+        visits: Int8!
         seconds_age: BigInt!,
         weight: BigDecimal!,
         coffee: Boolean!,
@@ -173,6 +175,7 @@ lazy_static! {
             id: "one",
             bool: true,
             int: std::i32::MAX,
+            int8: std::i64::MAX,
             bigDecimal: decimal.clone(),
             bigDecimalArray: vec![decimal.clone(), (decimal + 1.into())],
             string: "scalar",
@@ -295,9 +298,20 @@ fn insert_user_entity(
     coffee: bool,
     favorite_color: Option<&str>,
     drinks: Option<Vec<&str>>,
+    visits: i64,
     block: BlockNumber,
 ) {
-    let user = make_user(id, name, email, age, weight, coffee, favorite_color, drinks);
+    let user = make_user(
+        id,
+        name,
+        email,
+        age,
+        weight,
+        coffee,
+        favorite_color,
+        drinks,
+        visits,
+    );
 
     insert_entity_at(conn, layout, entity_type, vec![user], block);
 }
@@ -311,6 +325,7 @@ fn make_user(
     coffee: bool,
     favorite_color: Option<&str>,
     drinks: Option<Vec<&str>>,
+    visits: i64,
 ) -> Entity {
     let favorite_color = favorite_color
         .map(|s| Value::String(s.to_owned()))
@@ -325,7 +340,8 @@ fn make_user(
         seconds_age: BigInt::from(age) * BigInt::from(31557600_u64),
         weight: BigDecimal::from(weight),
         coffee: coffee,
-        favorite_color: favorite_color
+        favorite_color: favorite_color,
+        visits: visits
     };
     if let Some(drinks) = drinks {
         user.insert("drinks".to_owned(), drinks.into());
@@ -346,6 +362,7 @@ fn insert_users(conn: &PgConnection, layout: &Layout) {
         false,
         Some("yellow"),
         None,
+        60,
         0,
     );
     insert_user_entity(
@@ -360,6 +377,7 @@ fn insert_users(conn: &PgConnection, layout: &Layout) {
         true,
         Some("red"),
         Some(vec!["beer", "wine"]),
+        50,
         0,
     );
     insert_user_entity(
@@ -374,6 +392,7 @@ fn insert_users(conn: &PgConnection, layout: &Layout) {
         false,
         None,
         Some(vec!["coffee", "tea"]),
+        22,
         0,
     );
 }
@@ -390,9 +409,20 @@ fn update_user_entity(
     coffee: bool,
     favorite_color: Option<&str>,
     drinks: Option<Vec<&str>>,
+    visits: i64,
     block: BlockNumber,
 ) {
-    let user = make_user(id, name, email, age, weight, coffee, favorite_color, drinks);
+    let user = make_user(
+        id,
+        name,
+        email,
+        age,
+        weight,
+        coffee,
+        favorite_color,
+        drinks,
+        visits,
+    );
     update_entity_at(conn, layout, entity_type, vec![user], block);
 }
 
@@ -1003,6 +1033,7 @@ impl<'a> QueryChecker<'a> {
             false,
             Some("yellow"),
             None,
+            23,
             0,
         );
         insert_pets(conn, layout);
@@ -1111,6 +1142,7 @@ fn check_block_finds() {
             false,
             Some("yellow"),
             None,
+            55,
             1,
         );
 
@@ -1379,6 +1411,14 @@ fn check_find() {
                     .desc("name")
                     .first(5),
             );
+
+        // int 8 attributes
+        let checker = checker.check(
+            vec!["3"],
+            user_query()
+                .filter(EntityFilter::Equal("visits".to_owned(), Value::Int(22_i32)))
+                .desc("name"),
+        );
 
         // int attributes
         let checker = checker

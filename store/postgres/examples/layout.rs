@@ -52,6 +52,7 @@ fn print_diesel_tables(layout: &Layout) {
             ColumnType::BigDecimal | ColumnType::BigInt => "Numeric",
             ColumnType::Bytes => "Binary",
             ColumnType::Int => "Integer",
+            ColumnType::Int8 => "Int8",
             ColumnType::String | ColumnType::Enum(_) | ColumnType::TSVector(_) => "Text",
         }
         .to_owned();
@@ -71,6 +72,7 @@ fn print_diesel_tables(layout: &Layout) {
             ColumnType::BigDecimal | ColumnType::BigInt => "BigDecimal",
             ColumnType::Bytes => "Vec<u8>",
             ColumnType::Int => "i32",
+            ColumnType::Int8 => "i64",
             ColumnType::String | ColumnType::Enum(_) | ColumnType::TSVector(_) => "String",
         }
         .to_owned();
