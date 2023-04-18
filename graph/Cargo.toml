@@ -13,7 +13,7 @@ bytes = "1.0.1"
 cid = "0.10.1"
 diesel = { version = "1.4.8", features = ["postgres", "serde_json", "numeric", "r2d2", "chrono"] }
 diesel_derives = "1.4"
-chrono = "0.4.23"
+chrono = "0.4.24"
 envconfig = "0.10.0"
 Inflector = "0.11.3"
 isatty = "0.1.9"
@@ -44,7 +44,7 @@ slog-envlogger = "2.1.0"
 slog-term = "2.7.0"
 petgraph = "0.6.3"
 tiny-keccak = "1.5.0"
-tokio = { version = "1.16.1", features = ["time", "sync", "macros", "test-util", "rt-multi-thread", "parking_lot"] }
+tokio = { version = "1.26.0", features = ["time", "sync", "macros", "test-util", "rt-multi-thread", "parking_lot"] }
 tokio-stream = { version = "0.1.12", features = ["sync"] }
 tokio-retry = "0.3.0"
 url = "2.3.1"
@@ -66,9 +66,9 @@ web3 = { git = "https://github.com/graphprotocol/rust-web3", branch = "graph-pat
 serde_plain = "1.0.1"
 
 [dev-dependencies]
-test-store = { path = "../store/test-store" }
 clap = { version = "3.2.23", features = ["derive", "env"] }
 maplit = "1.0.2"
+hex-literal = "0.3"
 
 [build-dependencies]
 tonic-build = { workspace = true }

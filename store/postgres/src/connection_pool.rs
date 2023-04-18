@@ -8,8 +8,8 @@ use diesel::{sql_query, RunQueryDsl};
 
 use graph::cheap_clone::CheapClone;
 use graph::constraint_violation;
-use graph::prelude::tokio;
 use graph::prelude::tokio::time::Instant;
+use graph::prelude::{tokio, MetricsRegistry};
 use graph::slog::warn;
 use graph::util::timed_rw_lock::TimedMutex;
 use graph::{
@@ -18,7 +18,7 @@ use graph::{
         crit, debug, error, info, o,
         tokio::sync::Semaphore,
         CancelGuard, CancelHandle, CancelToken as _, CancelableError, Counter, Gauge, Logger,
-        MetricsRegistry, MovingStats, PoolWaitStats, StoreError, ENV_VARS,
+        MovingStats, PoolWaitStats, StoreError, ENV_VARS,
     },
     util::security::SafeDisplay,
 };
@@ -54,10 +54,22 @@ impl ForeignServer {
         format!("shard_{}", shard.as_str())
     }
 
-    /// The name of the schema under which the `subgraphs` schema for `shard`
-    /// is accessible in shards that are not `shard`
+    /// The name of the schema under which the `subgraphs` schema for
+    /// `shard` is accessible in shards that are not `shard`. In most cases
+    /// you actually want to use `metadata_schema_in`
     pub fn metadata_schema(shard: &Shard) -> String {
         format!("{}_subgraphs", Self::name(shard))
+    }
+
+    /// The name of the schema under which the `subgraphs` schema for
+    /// `shard` is accessible in the shard `current`. It is permissible for
+    /// `shard` and `current` to be the same.
+    pub fn metadata_schema_in(shard: &Shard, current: &Shard) -> String {
+        if shard == current {
+            "subgraphs".to_string()
+        } else {
+            Self::metadata_schema(&shard)
+        }
     }
 
     pub fn new_from_raw(shard: String, postgres_url: &str) -> Result<Self, anyhow::Error> {
@@ -202,6 +214,8 @@ impl ForeignServer {
             "subgraph_deployment_assignment",
             "subgraph",
             "subgraph_version",
+            "subgraph_deployment",
+            "subgraph_manifest",
         ] {
             let create_stmt =
                 catalog::create_foreign_table(conn, "subgraphs", table_name, &nsp, &self.name)?;
@@ -309,7 +323,7 @@ impl ConnectionPool {
         pool_size: u32,
         fdw_pool_size: Option<u32>,
         logger: &Logger,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
         coord: Arc<PoolCoordinator>,
     ) -> ConnectionPool {
         let state_tracker = PoolStateTracker::new();
@@ -592,7 +606,7 @@ struct EventHandler {
 impl EventHandler {
     fn new(
         logger: Logger,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
         wait_stats: PoolWaitStats,
         const_labels: HashMap<String, String>,
         state_tracker: PoolStateTracker,
@@ -710,7 +724,7 @@ impl PoolInner {
         pool_size: u32,
         fdw_pool_size: Option<u32>,
         logger: &Logger,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
         state_tracker: PoolStateTracker,
     ) -> PoolInner {
         let logger_store = logger.new(o!("component" => "Store"));
@@ -1156,7 +1170,7 @@ impl PoolCoordinator {
         postgres_url: String,
         pool_size: u32,
         fdw_pool_size: Option<u32>,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> ConnectionPool {
         let is_writable = !pool_name.is_replica();
 

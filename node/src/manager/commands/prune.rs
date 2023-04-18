@@ -6,11 +6,14 @@ use std::{
 };
 
 use graph::{
+    components::store::{PrunePhase, PruneRequest},
+    env::ENV_VARS,
+};
+use graph::{
     components::store::{PruneReporter, StatusStore},
     data::subgraph::status,
     prelude::{anyhow, BlockNumber},
 };
-use graph_chain_ethereum::ENV_VARS as ETH_ENV;
 use graph_store_postgres::{connection_pool::ConnectionPool, Store};
 
 use crate::manager::{
@@ -22,9 +25,10 @@ struct Progress {
     start: Instant,
     analyze_start: Instant,
     switch_start: Instant,
+    switch_time: Duration,
     table_start: Instant,
-    final_start: Instant,
-    nonfinal_start: Instant,
+    table_rows: usize,
+    initial_analyze: bool,
 }
 
 impl Progress {
@@ -33,9 +37,10 @@ impl Progress {
             start: Instant::now(),
             analyze_start: Instant::now(),
             switch_start: Instant::now(),
-            final_start: Instant::now(),
+            switch_time: Duration::from_secs(0),
             table_start: Instant::now(),
-            nonfinal_start: Instant::now(),
+            table_rows: 0,
+            initial_analyze: true,
         }
     }
 }
@@ -46,9 +51,21 @@ fn print_copy_header() {
     std::io::stdout().flush().ok();
 }
 
-fn print_copy_row(table: &str, total_rows: usize, elapsed: Duration) {
+fn print_batch(
+    table: &str,
+    total_rows: usize,
+    elapsed: Duration,
+    phase: PrunePhase,
+    finished: bool,
+) {
+    let phase = match (finished, phase) {
+        (true, _) => "          ",
+        (false, PrunePhase::CopyFinal) => "(final)",
+        (false, PrunePhase::CopyNonfinal) => "(nonfinal)",
+        (false, PrunePhase::Delete) => "(delete)",
+    };
     print!(
-        "\r{:<30} | {:>10} | {:>9}s",
+        "\r{:<30} | {:>10} | {:>9}s {phase}",
         abbreviate_table_name(table, 30),
         total_rows,
         elapsed.as_secs()
@@ -57,7 +74,14 @@ fn print_copy_row(table: &str, total_rows: usize, elapsed: Duration) {
 }
 
 impl PruneReporter for Progress {
+    fn start(&mut self, req: &PruneRequest) {
+        println!("Prune to {} historical blocks", req.history_blocks);
+    }
+
     fn start_analyze(&mut self) {
+        if !self.initial_analyze {
+            println!("");
+        }
         print!("Analyze tables");
         self.analyze_start = Instant::now();
     }
@@ -67,75 +91,68 @@ impl PruneReporter for Progress {
         std::io::stdout().flush().ok();
     }
 
-    fn finish_analyze(&mut self, stats: &[graph::components::store::VersionStats]) {
+    fn finish_analyze(
+        &mut self,
+        stats: &[graph::components::store::VersionStats],
+        analyzed: &[&str],
+    ) {
+        let stats: Vec<_> = stats
+            .iter()
+            .filter(|stat| self.initial_analyze || analyzed.contains(&stat.tablename.as_str()))
+            .map(|stats| stats.clone())
+            .collect();
         println!(
-            "\rAnalyzed {} tables in {}s",
-            stats.len(),
-            self.analyze_start.elapsed().as_secs()
+            "\rAnalyzed {} tables in {}s{: ^30}",
+            analyzed.len(),
+            self.analyze_start.elapsed().as_secs(),
+            ""
         );
-        show_stats(stats, HashSet::new()).ok();
+        show_stats(stats.as_slice(), HashSet::new()).ok();
         println!();
-    }
 
-    fn copy_final_start(&mut self, earliest_block: BlockNumber, final_block: BlockNumber) {
-        println!("Copy final entities (versions live between {earliest_block} and {final_block})");
-        print_copy_header();
-
-        self.final_start = Instant::now();
-        self.table_start = self.final_start;
-    }
-
-    fn copy_final_batch(&mut self, table: &str, _rows: usize, total_rows: usize, finished: bool) {
-        print_copy_row(table, total_rows, self.table_start.elapsed());
-        if finished {
-            println!();
-            self.table_start = Instant::now();
+        if self.initial_analyze {
+            // After analyzing, we start the actual work
+            println!("Pruning tables");
+            print_copy_header();
         }
+        self.initial_analyze = false;
+    }
+
+    fn start_table(&mut self, _table: &str) {
+        self.table_start = Instant::now();
+        self.table_rows = 0
+    }
+
+    fn prune_batch(&mut self, table: &str, rows: usize, phase: PrunePhase, finished: bool) {
+        self.table_rows += rows;
+        print_batch(
+            table,
+            self.table_rows,
+            self.table_start.elapsed(),
+            phase,
+            finished,
+        );
         std::io::stdout().flush().ok();
     }
 
-    fn copy_final_finish(&mut self) {
-        println!(
-            "Finished copying final entity versions in {}s\n",
-            self.final_start.elapsed().as_secs()
-        );
-    }
-
     fn start_switch(&mut self) {
-        println!("Blocking writes and switching tables");
-        print_copy_header();
         self.switch_start = Instant::now();
     }
 
     fn finish_switch(&mut self) {
+        self.switch_time += self.switch_start.elapsed();
+    }
+
+    fn finish_table(&mut self, _table: &str) {
+        println!();
+    }
+
+    fn finish(&mut self) {
         println!(
-            "Enabling writes. Switching took {}s\n",
-            self.switch_start.elapsed().as_secs()
+            "Finished pruning in {}s. Writing was blocked for {}s",
+            self.start.elapsed().as_secs(),
+            self.switch_time.as_secs()
         );
-    }
-
-    fn copy_nonfinal_start(&mut self, table: &str) {
-        print_copy_row(table, 0, Duration::from_secs(0));
-        self.nonfinal_start = Instant::now();
-    }
-
-    fn copy_nonfinal_batch(
-        &mut self,
-        table: &str,
-        _rows: usize,
-        total_rows: usize,
-        finished: bool,
-    ) {
-        print_copy_row(table, total_rows, self.table_start.elapsed());
-        if finished {
-            println!();
-            self.table_start = Instant::now();
-        }
-        std::io::stdout().flush().ok();
-    }
-
-    fn finish_prune(&mut self) {
-        println!("Finished pruning in {}s", self.start.elapsed().as_secs());
     }
 }
 
@@ -144,7 +161,9 @@ pub async fn run(
     primary_pool: ConnectionPool,
     search: DeploymentSearch,
     history: usize,
-    prune_ratio: f64,
+    rebuild_threshold: Option<f64>,
+    delete_threshold: Option<f64>,
+    once: bool,
 ) -> Result<(), anyhow::Error> {
     let history = history as BlockNumber;
     let deployment = search.locate_unique(&primary_pool)?;
@@ -169,24 +188,38 @@ pub async fn run(
 
     println!("prune {deployment}");
     println!("    latest: {latest}");
-    println!("     final: {}", latest - ETH_ENV.reorg_threshold);
+    println!("     final: {}", latest - ENV_VARS.reorg_threshold);
     println!("  earliest: {}\n", latest - history);
 
+    let mut req = PruneRequest::new(
+        &deployment,
+        history,
+        ENV_VARS.reorg_threshold,
+        status.earliest_block_number,
+        latest,
+    )?;
+    if let Some(rebuild_threshold) = rebuild_threshold {
+        req.rebuild_threshold = rebuild_threshold;
+    }
+    if let Some(delete_threshold) = delete_threshold {
+        req.delete_threshold = delete_threshold;
+    }
+
     let reporter = Box::new(Progress::new());
+
     store
         .subgraph_store()
-        .prune(
-            reporter,
-            &deployment,
-            latest - history,
-            // Using the setting for eth chains is a bit lazy; the value
-            // should really depend on the chain, but we don't have a
-            // convenient way to figure out how each chain deals with
-            // finality
-            ETH_ENV.reorg_threshold,
-            prune_ratio,
-        )
+        .prune(reporter, &deployment, req)
         .await?;
+
+    // Only after everything worked out, make the history setting permanent
+    if !once {
+        store.subgraph_store().set_history_blocks(
+            &deployment,
+            history,
+            ENV_VARS.reorg_threshold,
+        )?;
+    }
 
     Ok(())
 }

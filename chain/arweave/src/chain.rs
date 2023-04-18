@@ -40,7 +40,7 @@ pub struct Chain {
     name: String,
     client: Arc<ChainClient<Self>>,
     chain_store: Arc<dyn ChainStore>,
-    metrics_registry: Arc<dyn MetricsRegistry>,
+    metrics_registry: Arc<MetricsRegistry>,
 }
 
 impl std::fmt::Debug for Chain {

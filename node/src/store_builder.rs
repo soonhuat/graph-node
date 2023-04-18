@@ -14,7 +14,7 @@ use graph_store_postgres::connection_pool::{
 };
 use graph_store_postgres::{
     BlockStore as DieselBlockStore, ChainHeadUpdateListener as PostgresChainHeadUpdateListener,
-    NotificationSender, Shard as ShardName, Store as DieselStore, SubgraphStore,
+    ChainStoreMetrics, NotificationSender, Shard as ShardName, Store as DieselStore, SubgraphStore,
     SubscriptionManager, PRIMARY_SHARD,
 };
 
@@ -29,6 +29,7 @@ pub struct StoreBuilder {
     /// Map network names to the shards where they are/should be stored
     chains: HashMap<String, ShardName>,
     pub coord: Arc<PoolCoordinator>,
+    registry: Arc<MetricsRegistry>,
 }
 
 impl StoreBuilder {
@@ -40,7 +41,7 @@ impl StoreBuilder {
         node: &NodeId,
         config: &Config,
         fork_base: Option<Url>,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> Self {
         let primary_shard = config.primary_store().clone();
 
@@ -84,6 +85,7 @@ impl StoreBuilder {
             chain_head_update_listener,
             chains,
             coord,
+            registry,
         }
     }
 
@@ -95,7 +97,7 @@ impl StoreBuilder {
         node: &NodeId,
         config: &Config,
         fork_base: Option<Url>,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> (
         Arc<SubgraphStore>,
         HashMap<ShardName, ConnectionPool>,
@@ -165,6 +167,7 @@ impl StoreBuilder {
         subgraph_store: Arc<SubgraphStore>,
         chains: HashMap<String, ShardName>,
         networks: Vec<(String, Vec<ChainIdentifier>)>,
+        registry: Arc<MetricsRegistry>,
     ) -> Arc<DieselStore> {
         let networks = networks
             .into_iter()
@@ -176,12 +179,14 @@ impl StoreBuilder {
 
         let logger = logger.new(o!("component" => "BlockStore"));
 
+        let chain_store_metrics = Arc::new(ChainStoreMetrics::new(registry));
         let block_store = Arc::new(
             DieselBlockStore::new(
                 logger,
                 networks,
                 pools,
                 subgraph_store.notification_sender(),
+                chain_store_metrics,
             )
             .expect("Creating the BlockStore works"),
         );
@@ -199,7 +204,7 @@ impl StoreBuilder {
         node: &NodeId,
         name: &str,
         shard: &Shard,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
         coord: Arc<PoolCoordinator>,
     ) -> ConnectionPool {
         let logger = logger.new(o!("pool" => "main"));
@@ -235,7 +240,7 @@ impl StoreBuilder {
         node: &NodeId,
         name: &str,
         shard: &Shard,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
         coord: Arc<PoolCoordinator>,
     ) -> (Vec<ConnectionPool>, Vec<usize>) {
         let mut weights: Vec<_> = vec![shard.weight];
@@ -282,6 +287,7 @@ impl StoreBuilder {
             self.subgraph_store,
             self.chains,
             networks,
+            self.registry,
         )
     }
 

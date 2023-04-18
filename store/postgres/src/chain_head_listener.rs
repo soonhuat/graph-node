@@ -2,7 +2,7 @@ use graph::{
     blockchain::ChainHeadUpdateStream,
     prelude::{
         futures03::{self, FutureExt},
-        tokio, StoreError,
+        tokio, MetricsRegistry, StoreError,
     },
     prometheus::{CounterVec, GaugeVec},
     util::timed_rw_lock::TimedRwLock,
@@ -22,7 +22,7 @@ use graph::blockchain::ChainHeadUpdateListener as ChainHeadUpdateListenerTrait;
 use graph::prelude::serde::{Deserialize, Serialize};
 use graph::prelude::serde_json::{self, json};
 use graph::prelude::tokio::sync::{mpsc::Receiver, watch};
-use graph::prelude::{crit, debug, o, CheapClone, Logger, MetricsRegistry, ENV_VARS};
+use graph::prelude::{crit, debug, o, CheapClone, Logger, ENV_VARS};
 
 lazy_static! {
     pub static ref CHANNEL_NAME: SafeChannelName =
@@ -55,7 +55,7 @@ pub struct BlockIngestorMetrics {
 }
 
 impl BlockIngestorMetrics {
-    pub fn new(registry: Arc<dyn MetricsRegistry>) -> Self {
+    pub fn new(registry: Arc<MetricsRegistry>) -> Self {
         Self {
             chain_head_number: registry
                 .new_gauge_vec(
@@ -96,7 +96,7 @@ pub(crate) struct ChainHeadUpdateSender {
 }
 
 impl ChainHeadUpdateListener {
-    pub fn new(logger: &Logger, registry: Arc<dyn MetricsRegistry>, postgres_url: String) -> Self {
+    pub fn new(logger: &Logger, registry: Arc<MetricsRegistry>, postgres_url: String) -> Self {
         let logger = logger.new(o!("component" => "ChainHeadUpdateListener"));
         let ingestor_metrics = Arc::new(BlockIngestorMetrics::new(registry.clone()));
         let counter = registry

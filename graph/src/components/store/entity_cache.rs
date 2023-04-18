@@ -7,6 +7,8 @@ use crate::components::store::{self as s, Entity, EntityKey, EntityOp, EntityOpe
 use crate::prelude::{Schema, ENV_VARS};
 use crate::util::lfu_cache::LfuCache;
 
+use super::{DerivedEntityQuery, EntityType, LoadRelatedRequest};
+
 /// A cache for entities from the store that provides the basic functionality
 /// needed for the store interactions in the host exports. This struct tracks
 /// how entities are modified, and caches all entities looked up from the
@@ -113,6 +115,27 @@ impl EntityCache {
         Ok(entity)
     }
 
+    pub fn load_related(
+        &mut self,
+        eref: &LoadRelatedRequest,
+    ) -> Result<Vec<Entity>, anyhow::Error> {
+        let (base_type, field) = self.schema.get_field_related(eref)?;
+
+        let query = DerivedEntityQuery {
+            entity_type: EntityType::new(base_type.to_string()),
+            entity_field: field.name.clone().into(),
+            value: eref.entity_id.clone(),
+            causality_region: eref.causality_region,
+        };
+
+        let entities = self.store.get_derived(&query)?;
+        entities.iter().for_each(|(key, e)| {
+            self.current.insert(key.clone(), Some(e.clone()));
+        });
+        let entities: Vec<Entity> = entities.values().cloned().collect();
+        Ok(entities)
+    }
+
     pub fn remove(&mut self, key: EntityKey) {
         self.entity_op(key, EntityOp::Remove);
     }
@@ -151,6 +174,7 @@ impl EntityCache {
             }
         }
 
+        // check the validate for derived fields
         let is_valid = entity.validate(&self.schema, &key).is_ok();
 
         self.entity_op(key.clone(), EntityOp::Update(entity));

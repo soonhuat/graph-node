@@ -2,18 +2,18 @@ use clap::{Parser, Subcommand};
 use config::PoolSize;
 use git_testament::{git_testament, render_testament};
 use graph::bail;
-use graph::prelude::BLOCK_NUMBER_MAX;
+use graph::endpoint::EndpointMetrics;
+use graph::log::logger_with_levels;
+use graph::prelude::{MetricsRegistry, BLOCK_NUMBER_MAX};
 use graph::{data::graphql::effort::LoadManager, prelude::chrono, prometheus::Registry};
 use graph::{
-    log::logger,
     prelude::{
         anyhow::{self, Context as AnyhowContextTrait},
-        info, o, slog, tokio, Logger, NodeId, ENV_VARS,
+        info, tokio, Logger, NodeId,
     },
     url::Url,
 };
 use graph_chain_ethereum::{EthereumAdapter, EthereumNetworks};
-use graph_core::MetricsRegistry;
 use graph_graphql::prelude::GraphQlRunner;
 use graph_node::config::{self, Config as Cfg};
 use graph_node::manager::color::Terminal;
@@ -48,6 +48,13 @@ lazy_static! {
     version = RENDERED_TESTAMENT.as_str()
 )]
 pub struct Opt {
+    #[clap(
+        long,
+        default_value = "off",
+        env = "GRAPHMAN_LOG",
+        help = "level for log output in slog format"
+    )]
+    pub log_level: String,
     #[clap(
         long,
         default_value = "auto",
@@ -234,16 +241,33 @@ pub enum Command {
     #[clap(subcommand)]
     Index(IndexCommand),
 
-    /// Prune deployments
+    /// Prune a deployment
+    ///
+    /// Keep only entity versions that are needed to respond to queries at
+    /// block heights that are within `history` blocks of the subgraph head;
+    /// all other entity versions are removed.
+    ///
+    /// Unless `--once` is given, this setting is permanent and the subgraph
+    /// will periodically be pruned to remove history as the subgraph head
+    /// moves forward.
     Prune {
         /// The deployment to prune (see `help info`)
         deployment: DeploymentSearch,
-        /// Prune tables with a ratio of entities to entity versions lower than this
-        #[clap(long, short, default_value = "0.20")]
-        prune_ratio: f64,
+        /// Prune by rebuilding tables when removing more than this fraction
+        /// of history. Defaults to GRAPH_STORE_HISTORY_REBUILD_THRESHOLD
+        #[clap(long, short)]
+        rebuild_threshold: Option<f64>,
+        /// Prune by deleting when removing more than this fraction of
+        /// history but less than rebuild_threshold. Defaults to
+        /// GRAPH_STORE_HISTORY_DELETE_THRESHOLD
+        #[clap(long, short)]
+        delete_threshold: Option<f64>,
         /// How much history to keep in blocks
         #[clap(long, short = 'y', default_value = "10000")]
         history: usize,
+        /// Prune only this once
+        #[clap(long, short)]
+        once: bool,
     },
 
     /// General database management
@@ -821,7 +845,7 @@ impl Context {
             &self.node_id,
             &self.config,
             self.fork_base,
-            self.registry,
+            self.registry.clone(),
         );
 
         for pool in pools.values() {
@@ -834,6 +858,7 @@ impl Context {
             subgraph_store,
             HashMap::default(),
             vec![],
+            self.registry,
         );
 
         (store, pools)
@@ -873,7 +898,8 @@ impl Context {
     async fn ethereum_networks(&self) -> anyhow::Result<EthereumNetworks> {
         let logger = self.logger.clone();
         let registry = self.metrics_registry();
-        create_all_ethereum_networks(logger, registry, &self.config).await
+        let metrics = Arc::new(EndpointMetrics::mock());
+        create_all_ethereum_networks(logger, registry, &self.config, metrics).await
     }
 
     fn chain_store(self, chain_name: &str) -> anyhow::Result<Arc<ChainStore>> {
@@ -910,10 +936,7 @@ async fn main() -> anyhow::Result<()> {
 
     let version_label = opt.version_label.clone();
     // Set up logger
-    let logger = match ENV_VARS.log_levels {
-        Some(_) => logger(false),
-        None => Logger::root(slog::Discard, o!()),
-    };
+    let logger = logger_with_levels(false, Some(&opt.log_level));
 
     // Log version information
     info!(
@@ -1367,10 +1390,21 @@ async fn main() -> anyhow::Result<()> {
         Prune {
             deployment,
             history,
-            prune_ratio,
+            rebuild_threshold,
+            delete_threshold,
+            once,
         } => {
             let (store, primary_pool) = ctx.store_and_primary();
-            commands::prune::run(store, primary_pool, deployment, history, prune_ratio).await
+            commands::prune::run(
+                store,
+                primary_pool,
+                deployment,
+                history,
+                rebuild_threshold,
+                delete_threshold,
+                once,
+            )
+            .await
         }
         Drop {
             deployment,

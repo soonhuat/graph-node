@@ -10,6 +10,7 @@ use graph::data::subgraph::API_VERSION_0_0_7;
 use graph::prelude::ethabi::ParamType;
 use graph::prelude::ethabi::Token;
 use graph::prelude::tokio::try_join;
+use graph::slog::o;
 use graph::{
     blockchain::{block_stream::BlockWithTriggers, BlockPtr, IngestorError},
     prelude::{
@@ -60,8 +61,6 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct EthereumAdapter {
     logger: Logger,
-    url_hostname: Arc<String>,
-    /// The label for the provider from the configuration
     provider: String,
     web3: Arc<Web3<Transport>>,
     metrics: Arc<ProviderEthRpcMetrics>,
@@ -84,7 +83,6 @@ impl CheapClone for EthereumAdapter {
         Self {
             logger: self.logger.clone(),
             provider: self.provider.clone(),
-            url_hostname: self.url_hostname.cheap_clone(),
             web3: self.web3.cheap_clone(),
             metrics: self.metrics.cheap_clone(),
             supports_eip_1898: self.supports_eip_1898,
@@ -101,19 +99,11 @@ impl EthereumAdapter {
     pub async fn new(
         logger: Logger,
         provider: String,
-        url: &str,
         transport: Transport,
         provider_metrics: Arc<ProviderEthRpcMetrics>,
         supports_eip_1898: bool,
         call_only: bool,
     ) -> Self {
-        // Unwrap: The transport was constructed with this url, so it is valid and has a host.
-        let hostname = graph::url::Url::parse(url)
-            .unwrap()
-            .host_str()
-            .unwrap()
-            .to_string();
-
         let web3 = Arc::new(Web3::new(transport));
 
         // Use the client version to check if it is ganache. For compatibility with unit tests, be
@@ -128,7 +118,6 @@ impl EthereumAdapter {
         EthereumAdapter {
             logger,
             provider,
-            url_hostname: Arc::new(hostname),
             web3,
             metrics: provider_metrics,
             supports_eip_1898: supports_eip_1898 && !is_ganache,
@@ -438,6 +427,7 @@ impl EthereumAdapter {
         block_ptr: BlockPtr,
     ) -> impl Future<Item = Bytes, Error = EthereumContractCallError> + Send {
         let web3 = self.web3.clone();
+        let logger = Logger::new(&logger, o!("provider" => self.provider.clone()));
 
         // Ganache does not support calls by block hash.
         // See https://github.com/trufflesuite/ganache-cli/issues/973
@@ -840,10 +830,6 @@ impl EthereumAdapter {
 
 #[async_trait]
 impl EthereumAdapterTrait for EthereumAdapter {
-    fn url_hostname(&self) -> &str {
-        &self.url_hostname
-    }
-
     fn provider(&self) -> &str {
         &self.provider
     }
@@ -1422,7 +1408,7 @@ pub(crate) async fn blocks_with_triggers(
             None => {
                 warn!(logger,
                       "Ethereum endpoint is behind";
-                      "url" => eth.url_hostname()
+                      "url" => eth.provider()
                 );
                 bail!("Block {} not found in the chain", to)
             }

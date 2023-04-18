@@ -17,28 +17,36 @@ pub fn register(
     runner: &mut Runner,
     store: Arc<Store>,
     primary_pool: ConnectionPool,
-    registry: Arc<dyn MetricsRegistry>,
+    registry: Arc<MetricsRegistry>,
 ) {
+    const ONE_MINUTE: Duration = Duration::from_secs(60);
+    const ONE_HOUR: Duration = Duration::from_secs(60 * 60);
+
     runner.register(
         Arc::new(VacuumDeploymentsJob::new(store.subgraph_store())),
-        Duration::from_secs(60),
+        ONE_MINUTE,
     );
 
     runner.register(
         Arc::new(NotificationQueueUsage::new(primary_pool, registry)),
-        Duration::from_secs(60),
+        ONE_MINUTE,
     );
 
     runner.register(
         Arc::new(MirrorPrimary::new(store.subgraph_store())),
-        Duration::from_secs(15 * 60),
+        15 * ONE_MINUTE,
     );
 
     // Remove unused deployments every 2 hours
     runner.register(
         Arc::new(UnusedJob::new(store.subgraph_store())),
-        Duration::from_secs(2 * 60 * 60),
-    )
+        2 * ONE_HOUR,
+    );
+
+    runner.register(
+        Arc::new(RefreshMaterializedView::new(store.subgraph_store())),
+        6 * ONE_HOUR,
+    );
 }
 
 /// A job that vacuums `subgraphs.subgraph_deployment`. With a large number
@@ -79,7 +87,7 @@ struct NotificationQueueUsage {
 }
 
 impl NotificationQueueUsage {
-    fn new(primary: ConnectionPool, registry: Arc<dyn MetricsRegistry>) -> Self {
+    fn new(primary: ConnectionPool, registry: Arc<MetricsRegistry>) -> Self {
         let usage_gauge = registry
             .new_gauge(
                 "notification_queue_usage",
@@ -145,6 +153,27 @@ impl Job for MirrorPrimary {
 
     async fn run(&self, logger: &Logger) {
         self.store.mirror_primary_tables(logger).await;
+    }
+}
+
+struct RefreshMaterializedView {
+    store: Arc<SubgraphStore>,
+}
+
+impl RefreshMaterializedView {
+    fn new(store: Arc<SubgraphStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait]
+impl Job for RefreshMaterializedView {
+    fn name(&self) -> &str {
+        "Refresh materialized views"
+    }
+
+    async fn run(&self, logger: &Logger) {
+        self.store.refresh_materialized_views(logger).await;
     }
 }
 

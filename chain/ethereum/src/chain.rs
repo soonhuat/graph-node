@@ -8,7 +8,7 @@ use graph::data::subgraph::UnifiedMappingApiVersion;
 use graph::firehose::{FirehoseEndpoint, ForkStep};
 use graph::prelude::{
     BlockHash, ComponentLoggerConfig, ElasticComponentLoggerConfig, EthereumBlock,
-    EthereumCallCache, LightEthereumBlock, LightEthereumBlockExt,
+    EthereumCallCache, LightEthereumBlock, LightEthereumBlockExt, MetricsRegistry,
 };
 use graph::{
     blockchain::{
@@ -26,7 +26,7 @@ use graph::{
     firehose,
     prelude::{
         async_trait, o, serde_json as json, BlockNumber, ChainStore, EthereumBlockWithCalls,
-        Future01CompatExt, Logger, LoggerFactory, MetricsRegistry, NodeId,
+        Future01CompatExt, Logger, LoggerFactory, NodeId,
     },
 };
 use prost::Message;
@@ -191,7 +191,7 @@ impl BlockRefetcher<Chain> for EthereumBlockRefetcher {
 pub struct EthereumAdapterSelector {
     logger_factory: LoggerFactory,
     client: Arc<ChainClient<Chain>>,
-    registry: Arc<dyn MetricsRegistry>,
+    registry: Arc<MetricsRegistry>,
     chain_store: Arc<dyn ChainStore>,
 }
 
@@ -199,7 +199,7 @@ impl EthereumAdapterSelector {
     pub fn new(
         logger_factory: LoggerFactory,
         client: Arc<ChainClient<Chain>>,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
         chain_store: Arc<dyn ChainStore>,
     ) -> Self {
         Self {
@@ -241,7 +241,7 @@ pub struct Chain {
     logger_factory: LoggerFactory,
     name: String,
     node_id: NodeId,
-    registry: Arc<dyn MetricsRegistry>,
+    registry: Arc<MetricsRegistry>,
     client: Arc<ChainClient<Self>>,
     chain_store: Arc<dyn ChainStore>,
     call_cache: Arc<dyn EthereumCallCache>,
@@ -267,7 +267,7 @@ impl Chain {
         logger_factory: LoggerFactory,
         name: String,
         node_id: NodeId,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
         chain_store: Arc<dyn ChainStore>,
         call_cache: Arc<dyn EthereumCallCache>,
         client: Arc<ChainClient<Self>>,
@@ -479,7 +479,7 @@ impl Blockchain for Chain {
                 // present in the DB.
                 Box::new(PollingBlockIngestor::new(
                     logger,
-                    crate::ENV_VARS.reorg_threshold,
+                    graph::env::ENV_VARS.reorg_threshold,
                     eth_adapter,
                     self.chain_store().cheap_clone(),
                     self.polling_ingestor_interval,

@@ -386,7 +386,7 @@ pub struct BlockStreamMetrics {
 
 impl BlockStreamMetrics {
     pub fn new(
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
         deployment_id: &DeploymentHash,
         network: String,
         shard: String,

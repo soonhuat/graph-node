@@ -38,7 +38,7 @@ impl ToAscPtr for TriggerData {
         self,
         _heap: &mut H,
         _gas: &graph::runtime::gas::GasCounter,
-    ) -> Result<graph::runtime::AscPtr<()>, graph::runtime::DeterministicHostError> {
+    ) -> Result<graph::runtime::AscPtr<()>, graph::runtime::HostExportError> {
         unimplemented!()
     }
 }
@@ -172,6 +172,7 @@ where
         causality_region: &str,
         _debug_fork: &Option<Arc<dyn SubgraphFork>>,
         _subgraph_metrics: &Arc<graph::prelude::SubgraphInstanceMetrics>,
+        _instrument: bool,
     ) -> Result<BlockState<Chain>, MappingError> {
         for entity_change in block.changes.entity_changes.iter() {
             match entity_change.operation() {

@@ -207,7 +207,7 @@ impl LoadManager {
     pub fn new(
         logger: &Logger,
         blocked_queries: Vec<Arc<q::Document>>,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> Self {
         let logger = logger.new(o!("component" => "LoadManager"));
         let blocked_queries = blocked_queries

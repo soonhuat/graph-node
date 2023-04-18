@@ -24,7 +24,7 @@ pub struct ComponentLoggerConfig {
 pub struct LoggerFactory {
     parent: Logger,
     elastic_config: Option<ElasticLoggingConfig>,
-    metrics_registry: Arc<dyn MetricsRegistry>,
+    metrics_registry: Arc<MetricsRegistry>,
 }
 
 impl LoggerFactory {
@@ -32,7 +32,7 @@ impl LoggerFactory {
     pub fn new(
         logger: Logger,
         elastic_config: Option<ElasticLoggingConfig>,
-        metrics_registry: Arc<dyn MetricsRegistry>,
+        metrics_registry: Arc<MetricsRegistry>,
     ) -> Self {
         Self {
             parent: logger,

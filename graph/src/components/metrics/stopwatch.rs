@@ -45,7 +45,7 @@ impl StopwatchMetrics {
         logger: Logger,
         subgraph_id: DeploymentHash,
         stage: &str,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> Self {
         let stage = stage.to_owned();
         let mut inner = StopwatchInner {

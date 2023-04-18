@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::bail;
+
 use super::*;
 
 #[derive(Clone)]
@@ -81,6 +83,21 @@ pub struct EnvVarsStore {
     /// Set by `GRAPH_STORE_BATCH_TARGET_DURATION` (expressed in seconds).
     /// The default is 180s.
     pub batch_target_duration: Duration,
+
+    /// Prune tables where we will remove at least this fraction of entity
+    /// versions by rebuilding the table. Set by
+    /// `GRAPH_STORE_HISTORY_REBUILD_THRESHOLD`. The default is 0.5
+    pub rebuild_threshold: f64,
+    /// Prune tables where we will remove at least this fraction of entity
+    /// versions, but fewer than `rebuild_threshold`, by deleting. Set by
+    /// `GRAPH_STORE_HISTORY_DELETE_THRESHOLD`. The default is 0.05
+    pub delete_threshold: f64,
+    /// How much history a subgraph with limited history can accumulate
+    /// before it will be pruned. Setting this to 1.1 means that the
+    /// subgraph will be pruned every time it contains 10% more history (in
+    /// blocks) than its history limit. The default value is 1.2 and the
+    /// value must be at least 1.01
+    pub history_slack_factor: f64,
 }
 
 // This does not print any values avoid accidentally leaking any sensitive env vars
@@ -117,6 +134,9 @@ impl From<InnerStore> for EnvVarsStore {
             connection_idle_timeout: Duration::from_secs(x.connection_idle_timeout_in_secs),
             write_queue_size: x.write_queue_size,
             batch_target_duration: Duration::from_secs(x.batch_target_duration_in_secs),
+            rebuild_threshold: x.rebuild_threshold.0,
+            delete_threshold: x.delete_threshold.0,
+            history_slack_factor: x.history_slack_factor.0,
         }
     }
 }
@@ -160,4 +180,42 @@ pub struct InnerStore {
     write_queue_size: usize,
     #[envconfig(from = "GRAPH_STORE_BATCH_TARGET_DURATION", default = "180")]
     batch_target_duration_in_secs: u64,
+    #[envconfig(from = "GRAPH_STORE_HISTORY_REBUILD_THRESHOLD", default = "0.5")]
+    rebuild_threshold: ZeroToOneF64,
+    #[envconfig(from = "GRAPH_STORE_HISTORY_DELETE_THRESHOLD", default = "0.05")]
+    delete_threshold: ZeroToOneF64,
+    #[envconfig(from = "GRAPH_STORE_HISTORY_SLACK_FACTOR", default = "1.2")]
+    history_slack_factor: HistorySlackF64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ZeroToOneF64(f64);
+
+impl FromStr for ZeroToOneF64 {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let f = s.parse::<f64>()?;
+        if f < 0.0 || f > 1.0 {
+            bail!("invalid value: {s} must be between 0 and 1");
+        } else {
+            Ok(ZeroToOneF64(f))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HistorySlackF64(f64);
+
+impl FromStr for HistorySlackF64 {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let f = s.parse::<f64>()?;
+        if f < 1.01 {
+            bail!("invalid value: {s} must be bigger than 1.01");
+        } else {
+            Ok(HistorySlackF64(f))
+        }
+    }
 }

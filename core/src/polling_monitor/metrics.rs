@@ -13,7 +13,7 @@ pub struct PollingMonitorMetrics {
 }
 
 impl PollingMonitorMetrics {
-    pub fn new(registry: Arc<dyn MetricsRegistry>, subgraph_hash: &DeploymentHash) -> Self {
+    pub fn new(registry: Arc<MetricsRegistry>, subgraph_hash: &DeploymentHash) -> Self {
         let requests = registry
             .new_deployment_counter(
                 "polling_monitor_requests",

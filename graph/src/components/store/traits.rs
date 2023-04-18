@@ -169,6 +169,11 @@ pub trait SubgraphStore: Send + Sync + 'static {
         hash: &DeploymentHash,
         raw_yaml: String,
     ) -> Result<(), StoreError>;
+
+    /// Return `true` if the `instrument` flag for the deployment is set.
+    /// When this flag is set, indexing of the deployment should log
+    /// additional diagnostic information
+    fn instrument(&self, deployment: &DeploymentLocator) -> Result<bool, StoreError>;
 }
 
 pub trait ReadStore: Send + Sync + 'static {
@@ -179,6 +184,12 @@ pub trait ReadStore: Send + Sync + 'static {
     fn get_many(
         &self,
         keys: BTreeSet<EntityKey>,
+    ) -> Result<BTreeMap<EntityKey, Entity>, StoreError>;
+
+    /// Reverse lookup
+    fn get_derived(
+        &self,
+        query_derived: &DerivedEntityQuery,
     ) -> Result<BTreeMap<EntityKey, Entity>, StoreError>;
 
     fn input_schema(&self) -> Arc<Schema>;
@@ -195,6 +206,13 @@ impl<T: ?Sized + ReadStore> ReadStore for Arc<T> {
         keys: BTreeSet<EntityKey>,
     ) -> Result<BTreeMap<EntityKey, Entity>, StoreError> {
         (**self).get_many(keys)
+    }
+
+    fn get_derived(
+        &self,
+        entity_derived: &DerivedEntityQuery,
+    ) -> Result<BTreeMap<EntityKey, Entity>, StoreError> {
+        (**self).get_derived(entity_derived)
     }
 
     fn input_schema(&self) -> Arc<Schema> {

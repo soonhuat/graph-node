@@ -23,7 +23,7 @@ use graph_chain_near::{self as near, HeaderOnlyBlock as NearFirehoseHeaderOnlyBl
 use graph_chain_substreams as substreams;
 use graph_core::polling_monitor::ipfs_service;
 use graph_core::{
-    LinkResolver, MetricsRegistry, SubgraphAssignmentProvider as IpfsSubgraphAssignmentProvider,
+    LinkResolver, SubgraphAssignmentProvider as IpfsSubgraphAssignmentProvider,
     SubgraphInstanceManager, SubgraphRegistrar as IpfsSubgraphRegistrar,
 };
 use graph_graphql::prelude::GraphQlRunner;
@@ -230,17 +230,23 @@ async fn main() {
 
     let endpoint_metrics = Arc::new(EndpointMetrics::new(
         logger.clone(),
-        &config.chains.provider_urls(),
+        &config.chains.providers(),
+        metrics_registry.cheap_clone(),
     ));
 
     // Ethereum clients; query nodes ignore all ethereum clients and never
     // connect to them directly
     let eth_networks = if query_only {
-        EthereumNetworks::new()
+        EthereumNetworks::new(endpoint_metrics.cheap_clone())
     } else {
-        create_all_ethereum_networks(logger.clone(), metrics_registry.clone(), &config)
-            .await
-            .expect("Failed to parse Ethereum networks")
+        create_all_ethereum_networks(
+            logger.clone(),
+            metrics_registry.clone(),
+            &config,
+            endpoint_metrics.cheap_clone(),
+        )
+        .await
+        .expect("Failed to parse Ethereum networks")
     };
 
     let mut firehose_networks_by_kind = if query_only {
@@ -561,7 +567,7 @@ async fn main() {
     // Periodically check for contention in the tokio threadpool. First spawn a
     // task that simply responds to "ping" requests. Then spawn a separate
     // thread to periodically ping it and check responsiveness.
-    let (ping_send, mut ping_receive) = mpsc::channel::<crossbeam_channel::Sender<()>>(1);
+    let (ping_send, mut ping_receive) = mpsc::channel::<std::sync::mpsc::SyncSender<()>>(1);
     graph::spawn(async move {
         while let Some(pong_send) = ping_receive.recv().await {
             let _ = pong_send.clone().send(());
@@ -570,14 +576,13 @@ async fn main() {
     });
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(1));
-        let (pong_send, pong_receive) = crossbeam_channel::bounded(1);
+        let (pong_send, pong_receive) = std::sync::mpsc::sync_channel(1);
         if futures::executor::block_on(ping_send.clone().send(pong_send)).is_err() {
             debug!(contention_logger, "Shutting down contention checker thread");
             break;
         }
         let mut timeout = Duration::from_millis(10);
-        while pong_receive.recv_timeout(timeout)
-            == Err(crossbeam_channel::RecvTimeoutError::Timeout)
+        while pong_receive.recv_timeout(timeout) == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
         {
             debug!(contention_logger, "Possible contention in tokio threadpool";
                                      "timeout_ms" => timeout.as_millis(),
@@ -718,7 +723,7 @@ fn ethereum_networks_as_chains(
                 Arc::new(EthereumBlockRefetcher {}),
                 Arc::new(adapter_selector),
                 runtime_adapter,
-                ethereum::ENV_VARS.reorg_threshold,
+                ENV_VARS.reorg_threshold,
                 ethereum::ENV_VARS.ingestor_polling_interval,
                 is_ingestible,
             );

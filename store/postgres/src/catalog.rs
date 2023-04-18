@@ -8,6 +8,7 @@ use diesel::{
 };
 use graph::components::store::EntityType;
 use graph::components::store::VersionStats;
+use graph::prelude::BlockNumber;
 use itertools::Itertools;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
@@ -100,6 +101,7 @@ table! {
         deployment -> Integer,
         table_name -> Text,
         is_account_like -> Nullable<Bool>,
+        last_pruned_block -> Nullable<Integer>,
     }
 }
 
@@ -439,14 +441,10 @@ pub fn set_account_like(
 }
 
 pub fn copy_account_like(conn: &PgConnection, src: &Site, dst: &Site) -> Result<usize, StoreError> {
-    let src_nsp = if src.shard == dst.shard {
-        "subgraphs".to_string()
-    } else {
-        ForeignServer::metadata_schema(&src.shard)
-    };
+    let src_nsp = ForeignServer::metadata_schema_in(&src.shard, &dst.shard);
     let query = format!(
-        "insert into subgraphs.table_stats(deployment, table_name, is_account_like)
-         select $2 as deployment, ts.table_name, ts.is_account_like
+        "insert into subgraphs.table_stats(deployment, table_name, is_account_like, last_pruned_block)
+         select $2 as deployment, ts.table_name, ts.is_account_like, ts.last_pruned_block
            from {src_nsp}.table_stats ts
           where ts.deployment = $1",
         src_nsp = src_nsp
@@ -455,6 +453,27 @@ pub fn copy_account_like(conn: &PgConnection, src: &Site, dst: &Site) -> Result<
         .bind::<Integer, _>(src.id)
         .bind::<Integer, _>(dst.id)
         .execute(conn)?)
+}
+
+pub fn set_last_pruned_block(
+    conn: &PgConnection,
+    site: &Site,
+    table_name: &SqlName,
+    last_pruned_block: BlockNumber,
+) -> Result<(), StoreError> {
+    use table_stats as ts;
+
+    insert_into(ts::table)
+        .values((
+            ts::deployment.eq(site.id),
+            ts::table_name.eq(table_name.as_str()),
+            ts::last_pruned_block.eq(last_pruned_block),
+        ))
+        .on_conflict((ts::deployment, ts::table_name))
+        .do_update()
+        .set(ts::last_pruned_block.eq(last_pruned_block))
+        .execute(conn)?;
+    Ok(())
 }
 
 pub(crate) mod table_schema {
@@ -649,7 +668,7 @@ pub(crate) fn drop_index(
     Ok(())
 }
 
-pub fn stats(conn: &PgConnection, namespace: &Namespace) -> Result<Vec<VersionStats>, StoreError> {
+pub fn stats(conn: &PgConnection, site: &Site) -> Result<Vec<VersionStats>, StoreError> {
     #[derive(Queryable, QueryableByName)]
     pub struct DbStats {
         #[sql_type = "Integer"]
@@ -661,6 +680,8 @@ pub fn stats(conn: &PgConnection, namespace: &Namespace) -> Result<Vec<VersionSt
         /// The ratio `entities / versions`
         #[sql_type = "Double"]
         pub ratio: f64,
+        #[sql_type = "Nullable<Integer>"]
+        pub last_pruned_block: Option<i32>,
     }
 
     impl From<DbStats> for VersionStats {
@@ -670,6 +691,7 @@ pub fn stats(conn: &PgConnection, namespace: &Namespace) -> Result<Vec<VersionSt
                 versions: s.versions,
                 tablename: s.tablename,
                 ratio: s.ratio,
+                last_pruned_block: s.last_pruned_block,
             }
         }
     }
@@ -687,9 +709,13 @@ pub fn stats(conn: &PgConnection, namespace: &Namespace) -> Result<Vec<VersionSt
                 case when c.reltuples = 0 then 0::float8
                      when s.n_distinct < 0 then (-s.n_distinct)::float8
                      else greatest(s.n_distinct, 1)::float8 / c.reltuples::float8
-                 end as ratio
+                 end as ratio,
+                 ts.last_pruned_block
            from pg_namespace n, pg_class c, pg_stats s
-          where n.nspname = $1
+                left outer join subgraphs.table_stats ts
+                     on (ts.table_name = s.tablename
+                     and ts.deployment = $1)
+          where n.nspname = $2
             and c.relnamespace = n.oid
             and s.schemaname = n.nspname
             and s.attname = 'id'
@@ -698,7 +724,8 @@ pub fn stats(conn: &PgConnection, namespace: &Namespace) -> Result<Vec<VersionSt
         .to_string();
 
     let stats = sql_query(query)
-        .bind::<Text, _>(namespace.as_str())
+        .bind::<Integer, _>(site.id)
+        .bind::<Text, _>(site.namespace.as_str())
         .load::<DbStats>(conn)
         .map_err(StoreError::from)?;
 
@@ -800,4 +827,35 @@ pub(crate) fn set_stats_target(
     let query = format!("alter table {}.{} {}", namespace, table.quoted(), columns);
     conn.batch_execute(&query)?;
     Ok(())
+}
+
+/// Return the names of all tables in the `namespace` that need to be
+/// analyzed. Whether a table needs to be analyzed is determined with the
+/// same logic that Postgres' [autovacuum
+/// daemon](https://www.postgresql.org/docs/current/routine-vacuuming.html#AUTOVACUUM)
+/// uses
+pub(crate) fn needs_autoanalyze(
+    conn: &PgConnection,
+    namespace: &Namespace,
+) -> Result<Vec<SqlName>, StoreError> {
+    const QUERY: &str = "select relname \
+                           from pg_stat_user_tables \
+                          where (select setting::numeric from pg_settings where name = 'autovacuum_analyze_threshold') \
+                              + (select setting::numeric from pg_settings where name = 'autovacuum_analyze_scale_factor')*(n_live_tup + n_dead_tup) < n_mod_since_analyze
+                            and schemaname = $1";
+
+    #[derive(Queryable, QueryableByName)]
+    struct TableName {
+        #[sql_type = "Text"]
+        name: SqlName,
+    }
+
+    let tables = sql_query(QUERY)
+        .bind::<Text, _>(namespace.as_str())
+        .get_results::<TableName>(conn)
+        .optional()?
+        .map(|tables| tables.into_iter().map(|t| t.name).collect())
+        .unwrap_or(vec![]);
+
+    Ok(tables)
 }

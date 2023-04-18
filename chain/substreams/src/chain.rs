@@ -44,14 +44,14 @@ pub struct Chain {
 
     pub(crate) logger_factory: LoggerFactory,
     pub(crate) client: Arc<ChainClient<Self>>,
-    pub(crate) metrics_registry: Arc<dyn MetricsRegistry>,
+    pub(crate) metrics_registry: Arc<MetricsRegistry>,
 }
 
 impl Chain {
     pub fn new(
         logger_factory: LoggerFactory,
         firehose_endpoints: FirehoseEndpoints,
-        metrics_registry: Arc<dyn MetricsRegistry>,
+        metrics_registry: Arc<MetricsRegistry>,
         chain_store: Arc<dyn ChainStore>,
         block_stream_builder: Arc<dyn BlockStreamBuilder<Self>>,
     ) -> Self {

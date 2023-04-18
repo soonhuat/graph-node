@@ -76,7 +76,7 @@ impl GraphQLMetricsTrait for GraphQLMetrics {
 }
 
 impl GraphQLMetrics {
-    pub fn new(registry: Arc<dyn MetricsRegistry>) -> Self {
+    pub fn new(registry: Arc<MetricsRegistry>) -> Self {
         let query_execution_time = registry
             .new_histogram_vec(
                 "query_execution_time",
@@ -140,7 +140,7 @@ impl GraphQLMetrics {
 
     // Tests need to construct one of these, but normal code doesn't
     #[cfg(debug_assertions)]
-    pub fn make(registry: Arc<dyn MetricsRegistry>) -> Self {
+    pub fn make(registry: Arc<MetricsRegistry>) -> Self {
         Self::new(registry)
     }
 

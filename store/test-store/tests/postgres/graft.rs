@@ -6,6 +6,7 @@ use test_store::*;
 
 use graph::components::store::{
     DeploymentLocator, EntityKey, EntityOrder, EntityQuery, EntityType, PruneReporter,
+    PruneRequest, PruningStrategy, VersionStats,
 };
 use graph::data::store::scalar;
 use graph::data::subgraph::schema::*;
@@ -537,9 +538,13 @@ fn on_sync() {
 
 #[test]
 fn prune() {
+    struct Progress;
+    impl PruneReporter for Progress {}
+
     fn check_at_block(
         store: &DieselSubgraphStore,
         src: &DeploymentLocator,
+        strategy: PruningStrategy,
         block: BlockNumber,
         exp: Vec<&str>,
     ) {
@@ -558,75 +563,91 @@ fn prune() {
             .into_iter()
             .map(|entity| entity.id().unwrap())
             .collect();
-        assert_eq!(act, exp);
-    }
-
-    async fn prune(
-        store: &DieselSubgraphStore,
-        src: &DeploymentLocator,
-        earliest_block: BlockNumber,
-    ) -> Result<(), StoreError> {
-        struct Progress;
-        impl PruneReporter for Progress {}
-        let reporter = Box::new(Progress);
-
-        store
-            .prune(reporter, src, earliest_block, 1, 1.1)
-            .await
-            .map(|_| ())
-    }
-
-    run_test(|store, src| async move {
-        // The setup sets the subgraph pointer to block 2, we try to set
-        // earliest block to 5
-        prune(&store, &src, 5)
-            .await
-            .expect_err("setting earliest block later than latest does not work");
-
-        // Latest block 2 minus reorg threshold 1 means we need to copy
-        // final blocks from block 1, but want earliest as block 2, i.e. no
-        // final blocks which won't work
-        prune(&store, &src, 2)
-            .await
-            .expect_err("setting earliest block after last final block fails");
-
-        // Add another version for user 2 at block 4
-        let user2 = create_test_entity(
-            "2",
-            USER,
-            "Cindini",
-            "dinici@email.com",
-            44_i32,
-            157.1,
-            true,
-            Some("red"),
+        assert_eq!(
+            act, exp,
+            "different users visible at block {block} with {strategy}"
         );
-        transact_and_wait(&store, &src, BLOCKS[5].clone(), vec![user2])
-            .await
-            .unwrap();
+    }
 
-        // Setup and the above addition create these user versions:
-        // id | versions
-        // ---+---------
-        //  1 | [0,)
-        //  2 | [1,5) [5,)
-        //  3 | [1,2) [2,)
+    for strategy in [PruningStrategy::Rebuild, PruningStrategy::Delete] {
+        run_test(move |store, src| async move {
+            store
+                .set_history_blocks(&src, -3, 10)
+                .expect_err("history_blocks can not be set to a negative number");
 
-        // Forward block ptr to block 5
-        transact_and_wait(&store, &src, BLOCKS[6].clone(), vec![])
-            .await
-            .unwrap();
-        // Pruning only removes the [1,2) version of user 3
-        prune(&store, &src, 3).await.expect("pruning works");
+            store
+                .set_history_blocks(&src, 10, 10)
+                .expect_err("history_blocks must be bigger than reorg_threshold");
 
-        // Check which versions exist at every block, even if they are
-        // before the new earliest block, since we don't have a convenient
-        // way to load all entity versions with their block range
-        check_at_block(&store, &src, 0, vec!["1"]);
-        check_at_block(&store, &src, 1, vec!["1", "2"]);
-        for block in 2..=5 {
-            check_at_block(&store, &src, block, vec!["1", "2", "3"]);
-        }
-        Ok(())
-    })
+            // Add another version for user 2 at block 4
+            let user2 = create_test_entity(
+                "2",
+                USER,
+                "Cindini",
+                "dinici@email.com",
+                44_i32,
+                157.1,
+                true,
+                Some("red"),
+            );
+            transact_and_wait(&store, &src, BLOCKS[5].clone(), vec![user2])
+                .await
+                .unwrap();
+
+            // Setup and the above addition create these user versions:
+            // id | versions
+            // ---+---------
+            //  1 | [0,)
+            //  2 | [1,5) [5,)
+            //  3 | [1,2) [2,)
+
+            // Forward block ptr to block 6
+            transact_and_wait(&store, &src, BLOCKS[6].clone(), vec![])
+                .await
+                .unwrap();
+
+            // Prune to 3 blocks of history, with a reorg threshold of 1 where
+            // we have blocks from [0, 6]. That should only remove the [1,2)
+            // version of user 3
+            let mut req = PruneRequest::new(&src, 3, 1, 0, 6)?;
+            // Change the thresholds so that we select the desired strategy
+            match strategy {
+                PruningStrategy::Rebuild => {
+                    req.rebuild_threshold = 0.0;
+                    req.delete_threshold = 0.0;
+                }
+                PruningStrategy::Delete => {
+                    req.rebuild_threshold = 1.0;
+                    req.delete_threshold = 0.0;
+                }
+            }
+            // We have 5 versions for 3 entities
+            let stats = VersionStats {
+                entities: 3,
+                versions: 5,
+                tablename: USER.to_ascii_lowercase(),
+                ratio: 3.0 / 5.0,
+                last_pruned_block: None,
+            };
+            assert_eq!(
+                Some(strategy),
+                req.strategy(&stats),
+                "changing thresholds didn't yield desired strategy"
+            );
+            store
+                .prune(Box::new(Progress), &src, req)
+                .await
+                .expect("pruning works");
+
+            // Check which versions exist at every block, even if they are
+            // before the new earliest block, since we don't have a convenient
+            // way to load all entity versions with their block range
+            check_at_block(&store, &src, strategy, 0, vec!["1"]);
+            check_at_block(&store, &src, strategy, 1, vec!["1", "2"]);
+            for block in 2..=5 {
+                check_at_block(&store, &src, strategy, block, vec!["1", "2", "3"]);
+            }
+            Ok(())
+        })
+    }
 }

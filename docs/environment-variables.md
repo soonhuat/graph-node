@@ -117,10 +117,12 @@ those.
   this variable is set to any value, `graph-node` will still accept GraphQL
   subscriptions, but they won't receive any updates.
 - `ENABLE_GRAPHQL_VALIDATIONS`: enables GraphQL validations, based on the GraphQL specification.
-  This will validate and ensure every query executes follows the execution rules.
+  This will validate and ensure every query executes follows the execution
+  rules. Default: `false`
 - `SILENT_GRAPHQL_VALIDATIONS`: If `ENABLE_GRAPHQL_VALIDATIONS` is enabled, you are also able to just
   silently print the GraphQL validation errors, without failing the actual query. Note: queries
-  might still fail as part of the later stage validations running, during GraphQL engine execution.
+  might still fail as part of the later stage validations running, during
+  GraphQL engine execution. Default: `true`
 - `GRAPH_GRAPHQL_DISABLE_BOOL_FILTERS`: disables the ability to use AND/OR
   filters. This is useful if we want to disable filters because of
   performance reasons.
@@ -220,3 +222,19 @@ those.
 - `GRAPH_FORK_BASE`: api url for where the graph node will fork from, use `https://api.thegraph.com/subgraphs/id/`
   for the hosted service.
 - `GRAPH_DEBUG_FORK`: the IPFS hash id of the subgraph to fork.
+- `GRAPH_STORE_HISTORY_SLACK_FACTOR`: How much history a subgraph with
+  limited history can accumulate before it will be pruned. Setting this to
+  1.1 means that the subgraph will be pruned every time it contains 10%
+  more history (in blocks) than its history limit. The default value is 1.2
+  and the value must be at least 1.01
+- `GRAPH_STORE_HISTORY_REBUILD_THRESHOLD`,
+  `GRAPH_STORE_HISTORY_DELETE_THRESHOLD`: when pruning, prune by copying
+  the entities we will keep to new tables if we estimate that we will
+  remove more than a factor of `REBUILD_THRESHOLD` of the deployment's
+  history. If we estimate to remove a factor between `REBUILD_THRESHOLD`
+  and `DELETE_THRESHOLD`, prune by deleting from the existing tables of the
+  deployment. If we estimate to remove less than `DELETE_THRESHOLD`
+  entities, do not change the table. Both settings are floats, and default
+  to 0.5 for the `REBUILD_THRESHOLD` and 0.05 for the `DELETE_THRESHOLD`;
+  they must be between 0 and 1, and `REBUILD_THRESHOLD` must be bigger than
+  `DELETE_THRESHOLD`.

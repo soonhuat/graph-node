@@ -17,7 +17,7 @@ use graph::{
         server::index_node::VersionInfo,
         store::{
             self, BlockStore, DeploymentLocator, DeploymentSchemaVersion,
-            EnsLookup as EnsLookupTrait, PruneReporter, SubgraphFork,
+            EnsLookup as EnsLookupTrait, PruneReporter, PruneRequest, SubgraphFork,
         },
     },
     constraint_violation,
@@ -218,7 +218,7 @@ impl SubgraphStore {
         placer: Arc<dyn DeploymentPlacer + Send + Sync + 'static>,
         sender: Arc<NotificationSender>,
         fork_base: Option<Url>,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> Self {
         Self {
             inner: Arc::new(SubgraphStoreInner::new(
@@ -274,7 +274,7 @@ pub struct SubgraphStoreInner {
     placer: Arc<dyn DeploymentPlacer + Send + Sync + 'static>,
     sender: Arc<NotificationSender>,
     writables: Mutex<HashMap<DeploymentId, Arc<WritableStore>>>,
-    registry: Arc<dyn MetricsRegistry>,
+    registry: Arc<MetricsRegistry>,
 }
 
 impl SubgraphStoreInner {
@@ -297,7 +297,7 @@ impl SubgraphStoreInner {
         stores: Vec<(Shard, ConnectionPool, Vec<ConnectionPool>, Vec<usize>)>,
         placer: Arc<dyn DeploymentPlacer + Send + Sync + 'static>,
         sender: Arc<NotificationSender>,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> Self {
         let mirror = {
             let pools = HashMap::from_iter(
@@ -1028,6 +1028,15 @@ impl SubgraphStoreInner {
         .await;
     }
 
+    pub async fn refresh_materialized_views(&self, logger: &Logger) {
+        join_all(
+            self.stores
+                .values()
+                .map(|store| store.refresh_materialized_views(logger)),
+        )
+        .await;
+    }
+
     pub fn analyze(
         &self,
         deployment: &DeploymentLocator,
@@ -1104,20 +1113,7 @@ impl SubgraphStoreInner {
         store.set_account_like(site, table, is_account_like).await
     }
 
-    /// Remove the history that is only needed to respond to queries before
-    /// block number `earliest_block` from the given deployment
-    ///
-    /// Only tables with a ratio of entities to entity versions below
-    /// `prune_ratio` will be pruned; that ratio is determined by looking at
-    /// Postgres planner stats to avoid lengthy counting queries. It is
-    /// assumed that if the ratio is higher than `prune_ratio` that pruning
-    /// won't make much of a difference and will just cause unnecessary
-    /// work.
-    ///
-    /// The `reorg_threshold` is used to determine which blocks will not be
-    /// modified any more by the subgraph writer that may be running
-    /// concurrently to reduce the amount of time that the writer needs to
-    /// be locked out while pruning is happening.
+    /// Prune the history according to the parameters in `req`.
     ///
     /// Pruning can take a long time, and is structured into multiple
     /// transactions such that none of them takes an excessively long time.
@@ -1128,18 +1124,26 @@ impl SubgraphStoreInner {
         &self,
         reporter: Box<dyn PruneReporter>,
         deployment: &DeploymentLocator,
-        earliest_block: BlockNumber,
-        reorg_threshold: BlockNumber,
-        prune_ratio: f64,
+        req: PruneRequest,
     ) -> Result<Box<dyn PruneReporter>, StoreError> {
         // Find the store by the deployment id; otherwise, we could only
         // prune the active copy of the deployment with `deployment.hash`
         let site = self.find_site(deployment.id.into())?;
         let store = self.for_site(&site)?;
 
-        store
-            .prune(reporter, site, earliest_block, reorg_threshold, prune_ratio)
-            .await
+        store.prune(reporter, site, req).await
+    }
+
+    pub fn set_history_blocks(
+        &self,
+        deployment: &DeploymentLocator,
+        history_blocks: BlockNumber,
+        reorg_threshold: BlockNumber,
+    ) -> Result<(), StoreError> {
+        let site = self.find_site(deployment.id.into())?;
+        let store = self.for_site(&site)?;
+
+        store.set_history_blocks(&site, history_blocks, reorg_threshold)
     }
 
     pub fn load_deployment(&self, site: &Site) -> Result<SubgraphDeploymentEntity, StoreError> {
@@ -1415,5 +1419,13 @@ impl SubgraphStoreTrait for SubgraphStore {
     ) -> Result<(), StoreError> {
         let (store, site) = self.store(hash)?;
         store.set_manifest_raw_yaml(site, raw_yaml).await
+    }
+
+    fn instrument(&self, deployment: &DeploymentLocator) -> Result<bool, StoreError> {
+        let site = self.find_site(deployment.id.into())?;
+        let store = self.for_site(&site)?;
+
+        let info = store.subgraph_info(&site)?;
+        Ok(info.instrument)
     }
 }

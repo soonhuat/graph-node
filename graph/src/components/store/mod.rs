@@ -7,6 +7,7 @@ pub use entity_cache::{EntityCache, ModificationsAndCache};
 use diesel::types::{FromSql, ToSql};
 pub use err::StoreError;
 use itertools::Itertools;
+use strum_macros::Display;
 pub use traits::*;
 
 use futures::stream::poll_fn;
@@ -27,7 +28,7 @@ use crate::data::store::scalar::Bytes;
 use crate::data::store::*;
 use crate::data::value::Word;
 use crate::data_source::CausalityRegion;
-use crate::prelude::*;
+use crate::{constraint_violation, prelude::*};
 
 /// The type name of an entity. This is the string that is used in the
 /// subgraph's GraphQL schema as `type NAME @entity { .. }`
@@ -137,6 +138,40 @@ pub struct EntityKey {
     pub causality_region: CausalityRegion,
 }
 
+#[derive(Debug, Clone)]
+pub struct LoadRelatedRequest {
+    /// Name of the entity type.
+    pub entity_type: EntityType,
+    /// ID of the individual entity.
+    pub entity_id: Word,
+    /// Field the shall be loaded
+    pub entity_field: Word,
+
+    /// This is the causality region of the data source that created the entity.
+    ///
+    /// In the case of an entity lookup, this is the causality region of the data source that is
+    /// doing the lookup. So if the entity exists but was created on a different causality region,
+    /// the lookup will return empty.
+    pub causality_region: CausalityRegion,
+}
+
+#[derive(Debug)]
+pub struct DerivedEntityQuery {
+    /// Name of the entity to search
+    pub entity_type: EntityType,
+    /// The field to check
+    pub entity_field: Word,
+    /// The value to compare against
+    pub value: Word,
+
+    /// This is the causality region of the data source that created the entity.
+    ///
+    /// In the case of an entity lookup, this is the causality region of the data source that is
+    /// doing the lookup. So if the entity exists but was created on a different causality region,
+    /// the lookup will return empty.
+    pub causality_region: CausalityRegion,
+}
+
 impl EntityKey {
     // For use in tests only
     #[cfg(debug_assertions)]
@@ -145,6 +180,15 @@ impl EntityKey {
             entity_type: EntityType::new(entity_type.into()),
             entity_id: entity_id.into().into(),
             causality_region: CausalityRegion::ONCHAIN,
+        }
+    }
+
+    pub fn from(id: &String, load_related_request: &LoadRelatedRequest) -> Self {
+        let clone = load_related_request.clone();
+        Self {
+            entity_id: id.clone().into(),
+            entity_type: clone.entity_type,
+            causality_region: clone.causality_region,
         }
     }
 }
@@ -184,6 +228,7 @@ pub enum EntityFilter {
     NotEndsWithNoCase(Attribute, Value),
     ChangeBlockGte(BlockNumber),
     Child(Child),
+    Fulltext(Attribute, Value),
 }
 
 // A somewhat concise string representation of a filter
@@ -198,7 +243,7 @@ impl fmt::Display for EntityFilter {
             Or(fs) => {
                 write!(f, "{}", fs.iter().map(|f| f.to_string()).join(" or "))
             }
-            Equal(a, v) => write!(f, "{a} = {v}"),
+            Equal(a, v) | Fulltext(a, v) => write!(f, "{a} = {v}"),
             Not(a, v) => write!(f, "{a} != {v}"),
             GreaterThan(a, v) => write!(f, "{a} > {v}"),
             LessThan(a, v) => write!(f, "{a} < {v}"),
@@ -1125,6 +1170,13 @@ impl ReadStore for EmptyStore {
         Ok(BTreeMap::new())
     }
 
+    fn get_derived(
+        &self,
+        _query: &DerivedEntityQuery,
+    ) -> Result<BTreeMap<EntityKey, Entity>, StoreError> {
+        Ok(BTreeMap::new())
+    }
+
     fn input_schema(&self) -> Arc<Schema> {
         self.schema.cheap_clone()
     }
@@ -1139,28 +1191,196 @@ pub struct VersionStats {
     pub tablename: String,
     /// The ratio `entities / versions`
     pub ratio: f64,
+    /// The last block to which this table was pruned
+    pub last_pruned_block: Option<BlockNumber>,
+}
+
+/// What phase of pruning we are working on
+pub enum PrunePhase {
+    /// Handling final entities
+    CopyFinal,
+    /// Handling nonfinal entities
+    CopyNonfinal,
+    /// Delete unneeded entity versions
+    Delete,
+}
+
+impl PrunePhase {
+    pub fn strategy(&self) -> PruningStrategy {
+        match self {
+            PrunePhase::CopyFinal | PrunePhase::CopyNonfinal => PruningStrategy::Rebuild,
+            PrunePhase::Delete => PruningStrategy::Delete,
+        }
+    }
 }
 
 /// Callbacks for `SubgraphStore.prune` so that callers can report progress
 /// of the pruning procedure to users
 #[allow(unused_variables)]
 pub trait PruneReporter: Send + 'static {
+    /// A pruning run has started. It will use the given `strategy` and
+    /// remove `history_frac` part of the blocks of the deployment, which
+    /// amounts to `history_blocks` many blocks.
+    ///
+    /// Before pruning, the subgraph has data for blocks from
+    /// `earliest_block` to `latest_block`
+    fn start(&mut self, req: &PruneRequest) {}
+
     fn start_analyze(&mut self) {}
     fn start_analyze_table(&mut self, table: &str) {}
     fn finish_analyze_table(&mut self, table: &str) {}
-    fn finish_analyze(&mut self, stats: &[VersionStats]) {}
 
-    fn copy_final_start(&mut self, earliest_block: BlockNumber, final_block: BlockNumber) {}
-    fn copy_final_batch(&mut self, table: &str, rows: usize, total_rows: usize, finished: bool) {}
-    fn copy_final_finish(&mut self) {}
+    /// Analyzing tables has finished. `stats` are the stats for all tables
+    /// in the deployment, `analyzed ` are the names of the tables that were
+    /// actually analyzed
+    fn finish_analyze(&mut self, stats: &[VersionStats], analyzed: &[&str]) {}
 
+    fn start_table(&mut self, table: &str) {}
+    fn prune_batch(&mut self, table: &str, rows: usize, phase: PrunePhase, finished: bool) {}
     fn start_switch(&mut self) {}
-    fn copy_nonfinal_start(&mut self, table: &str) {}
-    fn copy_nonfinal_batch(&mut self, table: &str, rows: usize, total_rows: usize, finished: bool) {
-    }
     fn finish_switch(&mut self) {}
+    fn finish_table(&mut self, table: &str) {}
 
-    fn finish_prune(&mut self) {}
+    fn finish(&mut self) {}
+}
+
+/// Select how pruning should be done
+#[derive(Clone, Copy, Debug, Display, PartialEq)]
+pub enum PruningStrategy {
+    /// Rebuild by copying the data we want to keep to new tables and swap
+    /// them out for the existing tables
+    Rebuild,
+    /// Delete unneeded data from the existing tables
+    Delete,
+}
+
+#[derive(Copy, Clone)]
+/// A request to prune a deployment. This struct encapsulates decision
+/// making around the best strategy for pruning (deleting historical
+/// entities or copying current ones) It needs to be filled with accurate
+/// information about the deployment that should be pruned.
+pub struct PruneRequest {
+    /// How many blocks of history to keep
+    pub history_blocks: BlockNumber,
+    /// The reorg threshold for the chain the deployment is on
+    pub reorg_threshold: BlockNumber,
+    /// The earliest block pruning should preserve
+    pub earliest_block: BlockNumber,
+    /// The last block that contains final entities not subject to a reorg
+    pub final_block: BlockNumber,
+    /// The latest block, i.e., the subgraph head
+    pub latest_block: BlockNumber,
+    /// Use the rebuild strategy when removing more than this fraction of
+    /// history. Initialized from `ENV_VARS.store.rebuild_threshold`, but
+    /// can be modified after construction
+    pub rebuild_threshold: f64,
+    /// Use the delete strategy when removing more than this fraction of
+    /// history but less than `rebuild_threshold`. Initialized from
+    /// `ENV_VARS.store.delete_threshold`, but can be modified after
+    /// construction
+    pub delete_threshold: f64,
+}
+
+impl PruneRequest {
+    /// Create a `PruneRequest` for a deployment that currently contains
+    /// entities for blocks from `first_block` to `latest_block` that should
+    /// retain only `history_blocks` blocks of history and is subject to a
+    /// reorg threshold of `reorg_threshold`.
+    pub fn new(
+        deployment: &DeploymentLocator,
+        history_blocks: BlockNumber,
+        reorg_threshold: BlockNumber,
+        first_block: BlockNumber,
+        latest_block: BlockNumber,
+    ) -> Result<Self, StoreError> {
+        let rebuild_threshold = ENV_VARS.store.rebuild_threshold;
+        let delete_threshold = ENV_VARS.store.delete_threshold;
+        if rebuild_threshold < 0.0 || rebuild_threshold > 1.0 {
+            return Err(constraint_violation!(
+                "the copy threshold must be between 0 and 1 but is {rebuild_threshold}"
+            ));
+        }
+        if delete_threshold < 0.0 || delete_threshold > 1.0 {
+            return Err(constraint_violation!(
+                "the delete threshold must be between 0 and 1 but is {delete_threshold}"
+            ));
+        }
+        if history_blocks <= reorg_threshold {
+            return Err(constraint_violation!(
+                "the deployment {} needs to keep at least {} blocks \
+                   of history and can't be pruned to only {} blocks of history",
+                deployment,
+                reorg_threshold + 1,
+                history_blocks
+            ));
+        }
+        if first_block >= latest_block {
+            return Err(constraint_violation!(
+                "the earliest block {} must be before the latest block {}",
+                first_block,
+                latest_block
+            ));
+        }
+
+        let earliest_block = latest_block - history_blocks;
+        let final_block = latest_block - reorg_threshold;
+
+        Ok(Self {
+            history_blocks,
+            reorg_threshold,
+            earliest_block,
+            final_block,
+            latest_block,
+            rebuild_threshold,
+            delete_threshold,
+        })
+    }
+
+    /// Determine what strategy to use for pruning
+    ///
+    /// We are pruning `history_pct` of the blocks from a table that has a
+    /// ratio of `version_ratio` entities to versions. If we are removing
+    /// more than `rebuild_threshold` percent of the versions, we prune by
+    /// rebuilding, and if we are removing more than `delete_threshold`
+    /// percent of the versions, we prune by deleting. If we would remove
+    /// less than `delete_threshold` percent of the versions, we don't
+    /// prune.
+    pub fn strategy(&self, stats: &VersionStats) -> Option<PruningStrategy> {
+        // If the deployment doesn't have enough history to cover the reorg
+        // threshold, do not prune
+        if self.earliest_block >= self.final_block {
+            return None;
+        }
+
+        // Estimate how much data we will throw away; we assume that
+        // entity versions are distributed evenly across all blocks so
+        // that `history_pct` will tell us how much of that data pruning
+        // will remove.
+        let removal_ratio = self.history_pct(stats) * (1.0 - stats.ratio);
+        if removal_ratio >= self.rebuild_threshold {
+            Some(PruningStrategy::Rebuild)
+        } else if removal_ratio >= self.delete_threshold {
+            Some(PruningStrategy::Delete)
+        } else {
+            None
+        }
+    }
+
+    /// Return an estimate of the fraction of the entities that are
+    /// historical in the table whose `stats` we are given
+    fn history_pct(&self, stats: &VersionStats) -> f64 {
+        let total_blocks = self.latest_block - stats.last_pruned_block.unwrap_or(0);
+        if total_blocks <= 0 || total_blocks < self.history_blocks {
+            // Something has gone very wrong; this could happen if the
+            // subgraph is ever rewound to before the last_pruned_block or
+            // if this is called when the subgraph has fewer blocks than
+            // history_blocks. In both cases, which should be transient,
+            // pretend that we would not delete any history
+            0.0
+        } else {
+            1.0 - self.history_blocks as f64 / total_blocks as f64
+        }
+    }
 }
 
 /// Represents an item retrieved from an

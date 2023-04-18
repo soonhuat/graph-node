@@ -396,7 +396,7 @@ pub struct NotificationSender {
 }
 
 impl NotificationSender {
-    pub fn new(registry: Arc<dyn MetricsRegistry>) -> Self {
+    pub fn new(registry: Arc<MetricsRegistry>) -> Self {
         let sent_counter = registry
             .global_counter_vec(
                 "notification_queue_sent",

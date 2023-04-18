@@ -3,11 +3,10 @@ use graph::blockchain::block_stream::BlockStreamEvent;
 use graph::blockchain::substreams_block_stream::SubstreamsBlockStream;
 use graph::endpoint::EndpointMetrics;
 use graph::firehose::SubgraphLimit;
-use graph::prelude::{info, tokio, DeploymentHash, Registry};
+use graph::prelude::{info, tokio, DeploymentHash, MetricsRegistry, Registry};
 use graph::tokio_stream::StreamExt;
 use graph::{env::env_var, firehose::FirehoseEndpoint, log::logger, substreams};
 use graph_chain_substreams::mapper::Mapper;
-use graph_core::MetricsRegistry;
 use prost::Message;
 use std::env;
 use std::sync::Arc;
@@ -42,7 +41,11 @@ async fn main() -> Result<(), Error> {
         prometheus_registry.clone(),
     ));
 
-    let endpoint_metrics = EndpointMetrics::new(logger.clone(), &[endpoint.clone()]);
+    let endpoint_metrics = EndpointMetrics::new(
+        logger.clone(),
+        &[endpoint.clone()],
+        Arc::new(MetricsRegistry::mock()),
+    );
 
     let firehose = Arc::new(FirehoseEndpoint::new(
         "substreams",

@@ -17,6 +17,10 @@ mod query_tests;
 pub(crate) mod index;
 mod prune;
 
+use diesel::pg::Pg;
+use diesel::serialize::Output;
+use diesel::sql_types::Text;
+use diesel::types::{FromSql, ToSql};
 use diesel::{connection::SimpleConnection, Connection};
 use diesel::{debug_query, OptionalExtension, PgConnection, RunQueryDsl};
 use graph::cheap_clone::CheapClone;
@@ -37,7 +41,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::relational_queries::{FindChangesQuery, FindPossibleDeletionsQuery};
+use crate::relational_queries::{FindChangesQuery, FindDerivedQuery, FindPossibleDeletionsQuery};
 use crate::{
     primary::{Namespace, Site},
     relational_queries::{
@@ -45,7 +49,7 @@ use crate::{
         FilterQuery, FindManyQuery, FindQuery, InsertQuery, RevertClampQuery, RevertRemoveQuery,
     },
 };
-use graph::components::store::{EntityKey, EntityType};
+use graph::components::store::{DerivedEntityQuery, EntityKey, EntityType};
 use graph::data::graphql::ext::{DirectiveFinder, DocumentExt, ObjectTypeExt};
 use graph::data::schema::{FulltextConfig, FulltextDefinition, Schema, SCHEMA_TYPE_NAME};
 use graph::data::store::BYTES_SCALAR;
@@ -168,6 +172,18 @@ impl Borrow<str> for &SqlName {
     }
 }
 
+impl FromSql<Text, Pg> for SqlName {
+    fn from_sql(bytes: Option<&[u8]>) -> diesel::deserialize::Result<Self> {
+        <String as FromSql<Text, Pg>>::from_sql(bytes).map(|s| SqlName::verbatim(s))
+    }
+}
+
+impl ToSql<Text, Pg> for SqlName {
+    fn to_sql<W: std::io::Write>(&self, out: &mut Output<W, Pg>) -> diesel::serialize::Result {
+        <String as ToSql<Text, Pg>>::to_sql(&self.0, out)
+    }
+}
+
 /// The SQL type to use for GraphQL ID properties. We support
 /// strings and byte arrays
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -231,6 +247,8 @@ pub struct Layout {
     pub enums: EnumMap,
     /// The query to count all entities
     pub count_query: String,
+    /// How many blocks of history the subgraph should keep
+    pub history_blocks: BlockNumber,
 }
 
 impl Layout {
@@ -358,6 +376,7 @@ impl Layout {
             tables,
             enums,
             count_query,
+            history_blocks: i32::MAX,
         })
     }
 
@@ -539,6 +558,32 @@ impl Layout {
         Ok(entities)
     }
 
+    pub fn find_derived(
+        &self,
+        conn: &PgConnection,
+        derived_query: &DerivedEntityQuery,
+        block: BlockNumber,
+        excluded_keys: &Vec<EntityKey>,
+    ) -> Result<BTreeMap<EntityKey, Entity>, StoreError> {
+        let table = self.table_for_entity(&derived_query.entity_type)?;
+        let query = FindDerivedQuery::new(table, derived_query, block, excluded_keys);
+
+        let mut entities = BTreeMap::new();
+
+        for data in query.load::<EntityData>(conn)? {
+            let entity_type = data.entity_type();
+            let entity_data: Entity = data.deserialize_with_layout(self, None, true)?;
+            let key = EntityKey {
+                entity_type,
+                entity_id: entity_data.id()?.into(),
+                causality_region: CausalityRegion::from_entity(&entity_data),
+            };
+
+            entities.insert(key, entity_data);
+        }
+        Ok(entities)
+    }
+
     pub fn find_changes(
         &self,
         conn: &PgConnection,
@@ -694,6 +739,7 @@ impl Layout {
             query.query_id,
             &self.site,
         )?;
+
         let query_clone = query.clone();
 
         let start = Instant::now();
@@ -893,15 +939,22 @@ impl Layout {
         true
     }
 
-    /// Update the layout with the latest information from the database; for
-    /// now, an update only changes the `is_account_like` flag for tables or
-    /// the layout's site. If no update is needed, just return `self`.
-    pub fn refresh(
+    /// Update the layout with the latest information from the database; an
+    /// update can only change the `is_account_like` flag for tables, the
+    /// layout's site, or the `history_blocks`. If no update is needed, just
+    /// return `self`.
+    ///
+    /// This is tied closely to how the `LayoutCache` works and called from
+    /// it right after creating a `Layout`, and periodically to update the
+    /// `Layout` in case changes were made
+    fn refresh(
         self: Arc<Self>,
         conn: &PgConnection,
         site: Arc<Site>,
     ) -> Result<Arc<Self>, StoreError> {
         let account_like = crate::catalog::account_like(conn, &self.site)?;
+        let history_blocks = deployment::history_blocks(conn, &self.site)?;
+
         let is_account_like = { |table: &Table| account_like.contains(table.name.as_str()) };
 
         let changed_tables: Vec<_> = self
@@ -909,9 +962,10 @@ impl Layout {
             .values()
             .filter(|table| table.is_account_like != is_account_like(table.as_ref()))
             .collect();
-        if changed_tables.is_empty() && site == self.site {
+        if changed_tables.is_empty() && site == self.site && history_blocks == self.history_blocks {
             return Ok(self);
         }
+
         let mut layout = (*self).clone();
         for table in changed_tables.into_iter() {
             let mut table = (*table.as_ref()).clone();
@@ -919,6 +973,7 @@ impl Layout {
             layout.tables.insert(table.object.clone(), Arc::new(table));
         }
         layout.site = site;
+        layout.history_blocks = history_blocks;
         Ok(Arc::new(layout))
     }
 }

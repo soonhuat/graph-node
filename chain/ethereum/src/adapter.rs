@@ -731,7 +731,7 @@ pub struct ProviderEthRpcMetrics {
 }
 
 impl ProviderEthRpcMetrics {
-    pub fn new(registry: Arc<dyn MetricsRegistry>) -> Self {
+    pub fn new(registry: Arc<MetricsRegistry>) -> Self {
         let request_duration = registry
             .new_histogram_vec(
                 "eth_rpc_request_duration",
@@ -787,7 +787,7 @@ pub struct SubgraphEthRpcMetrics {
 }
 
 impl SubgraphEthRpcMetrics {
-    pub fn new(registry: Arc<dyn MetricsRegistry>, subgraph_hash: &str) -> Self {
+    pub fn new(registry: Arc<MetricsRegistry>, subgraph_hash: &str) -> Self {
         let request_duration = registry
             .global_gauge_vec(
                 "deployment_eth_rpc_request_duration",
@@ -828,8 +828,6 @@ impl SubgraphEthRpcMetrics {
 /// or a remote node over RPC.
 #[async_trait]
 pub trait EthereumAdapter: Send + Sync + 'static {
-    fn url_hostname(&self) -> &str;
-
     /// The `provider.label` from the adapter's configuration
     fn provider(&self) -> &str;
 

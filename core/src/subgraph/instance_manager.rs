@@ -26,7 +26,7 @@ pub struct SubgraphInstanceManager<S: SubgraphStore> {
     logger_factory: LoggerFactory,
     subgraph_store: Arc<S>,
     chains: Arc<BlockchainMap>,
-    metrics_registry: Arc<dyn MetricsRegistry>,
+    metrics_registry: Arc<MetricsRegistry>,
     instances: SubgraphKeepAlive,
     link_resolver: Arc<dyn LinkResolver>,
     ipfs_service: IpfsService,
@@ -162,7 +162,7 @@ impl<S: SubgraphStore> SubgraphInstanceManager<S> {
         subgraph_store: Arc<S>,
         chains: Arc<BlockchainMap>,
         sg_metrics: Arc<SubgraphCountMetric>,
-        metrics_registry: Arc<dyn MetricsRegistry>,
+        metrics_registry: Arc<MetricsRegistry>,
         link_resolver: Arc<dyn LinkResolver>,
         ipfs_service: IpfsService,
         static_filters: bool,
@@ -403,6 +403,7 @@ impl<S: SubgraphStore> SubgraphInstanceManager<S> {
         let causality_region_seq =
             CausalityRegionSeq::from_current(store.causality_region_curr_val().await?);
 
+        let instrument = self.subgraph_store.instrument(&deployment)?;
         let instance = super::context::instance::SubgraphInstance::from_manifest(
             &logger,
             manifest,
@@ -427,6 +428,7 @@ impl<S: SubgraphStore> SubgraphInstanceManager<S> {
             manifest_idx_and_name,
             poi_version,
             network,
+            instrument,
         };
 
         // The subgraph state tracks the state of the subgraph instance over time

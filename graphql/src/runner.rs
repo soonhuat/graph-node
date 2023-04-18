@@ -46,7 +46,7 @@ where
         store: Arc<S>,
         subscription_manager: Arc<SM>,
         load_manager: Arc<LoadManager>,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> Self {
         let logger = logger.new(o!("component" => "GraphQlRunner"));
         let graphql_metrics = Arc::new(GraphQLMetrics::new(registry));

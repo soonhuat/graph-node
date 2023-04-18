@@ -22,7 +22,7 @@ struct FirehoseBlockStreamMetrics {
 }
 
 impl FirehoseBlockStreamMetrics {
-    pub fn new(registry: Arc<dyn MetricsRegistry>, deployment: DeploymentHash) -> Self {
+    pub fn new(registry: Arc<MetricsRegistry>, deployment: DeploymentHash) -> Self {
         Self {
             deployment,
 
@@ -115,7 +115,7 @@ where
         filter: Arc<C::TriggerFilter>,
         start_blocks: Vec<BlockNumber>,
         logger: Logger,
-        registry: Arc<dyn MetricsRegistry>,
+        registry: Arc<MetricsRegistry>,
     ) -> Self
     where
         F: FirehoseMapper<C> + 'static,
@@ -217,7 +217,7 @@ fn stream_blocks<C: Blockchain, F: FirehoseMapper<C>>(
     try_stream! {
         loop {
             let endpoint = client.firehose_endpoint()?;
-            let logger = logger.new(o!("deployment" => deployment.clone(), "provider" => endpoint.provider.clone()));
+            let logger = logger.new(o!("deployment" => deployment.clone(), "provider" => endpoint.provider.to_string()));
 
             info!(
                 &logger,
