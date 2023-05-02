@@ -1,5 +1,23 @@
 version: 2
 updates:
+- package-ecosystem: npm
+  directory: tests/integration-tests
+  schedule:
+    interval: daily
+  open-pull-requests-limit: 10
+  allow:
+    - dependency-name: "@graphprotocol/graph-*"
+  versioning-strategy: auto
+
+- package-ecosystem: npm
+  directory: tests/runner-tests
+  schedule:
+    interval: daily
+  open-pull-requests-limit: 10
+  allow:
+    - dependency-name: "@graphprotocol/graph-*"
+  versioning-strategy: auto
+
 - package-ecosystem: cargo
   directory: "/"
   schedule:
