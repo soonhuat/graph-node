@@ -1685,7 +1685,7 @@ impl DeploymentStore {
                     let _ = self.revert_block_operations(site.clone(), parent_ptr.clone(), &FirehoseCursor::None)?;
 
                     // Unfail the deployment.
-                    deployment::update_deployment_status(conn, deployment_id, prev_health, None)?;
+                    deployment::update_deployment_status(conn, deployment_id, prev_health, None,None)?;
 
                     Ok(UnfailOutcome::Unfailed)
                 }
@@ -1715,6 +1715,26 @@ impl DeploymentStore {
                     Ok(UnfailOutcome::Noop)
                 }
             }
+        })
+    }
+
+    // If a deterministic error happens and nonFatalErrors is set, we should
+    // update the nonFatalErrors field in the deployment table.
+    pub(crate) fn update_non_fatal_errors(
+        &self,
+        site: Arc<Site>,
+        errors: Option<Vec<SubgraphError>>,
+    ) -> Result<(), StoreError> {
+        let conn = &self.get_conn()?;
+        let deployment_id = &site.deployment;
+        conn.transaction(|| {
+            deployment::update_non_fatal_errors(
+                conn,
+                deployment_id,
+                deployment::SubgraphHealth::Unhealthy,
+                errors,
+            )?;
+            Ok(())
         })
     }
 
@@ -1767,6 +1787,7 @@ impl DeploymentStore {
                             conn,
                             deployment_id,
                             deployment::SubgraphHealth::Healthy,
+                            None,
                             None,
                         )?;
 
