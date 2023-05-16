@@ -9,7 +9,6 @@ use graph::data::{
 };
 use graph::prelude::*;
 
-use graph_server_http::test_utils;
 use graph_server_http::GraphQLServer as HyperGraphQLServer;
 
 use tokio::time::sleep;
@@ -85,6 +84,8 @@ impl GraphQlRunner for TestGraphQlRunner {
 
 #[cfg(test)]
 mod test {
+    use graphql_utils::test_utils;
+
     use super::*;
 
     lazy_static! {
