@@ -32,7 +32,7 @@ use super::abi::{AscUnresolvedContractCall, AscUnresolvedContractCall_0_0_4};
 // limits.
 //
 // [1] - https://www.sciencedirect.com/science/article/abs/pii/S0166531620300900
-pub const ETHEREUM_CALL: Gas = Gas::new(5_000_000_000);
+pub const ETHEREUM_CALL: Gas = Gas::new(30_000_000);
 
 pub struct RuntimeAdapter {
     pub eth_adapters: Arc<EthereumNetworkAdapters>,
